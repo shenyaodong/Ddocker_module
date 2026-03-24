@@ -6,6 +6,7 @@ on:
 jobs:
   save-image:
     runs-on: ubuntu-latest
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
@@ -20,7 +21,7 @@ jobs:
       run: docker save prom/prometheus:v2.37.0 -o prometheus-arm64.tar
 
     - name: Upload tar file as artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: prometheus-arm64
         path: prometheus-arm64.tar
