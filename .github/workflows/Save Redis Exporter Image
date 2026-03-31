@@ -1,0 +1,27 @@
+name: Save Redis Exporter Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  save-image:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Docker
+      uses: docker/setup-buildx-action@v2
+
+    - name: Pull Redis Exporter Image
+      run: docker pull --platform linux/arm64 oliver006/redis_exporter:v1.57.0
+
+    - name: Save Redis Exporter Image as tar
+      run: docker save oliver006/redis_exporter:v1.57.0 -o redis_exporter-arm64.tar
+
+    - name: Upload tar file as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: redis_exporter-arm64
+        path: redis_exporter-arm64.tar
