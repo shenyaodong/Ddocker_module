@@ -1,0 +1,137 @@
+name: Build CES Exporter ARM64 Image (Tar Only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # ============================================
+    # 1. 检出 CES Exporter 源码
+    # ============================================
+    - name: Checkout CES Exporter source
+      uses: actions/checkout@v4
+      with:
+        repository: huaweicloud/cloudeye-exporter
+        path: cloudeye-exporter
+        ref: main          # 可改为指定版本，如 v1.0.0
+    
+    # ============================================
+    # 2. 设置 Go 环境
+    # ============================================
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+    
+    # ============================================
+    # 3. 编译 ARM64 二进制
+    # ============================================
+    - name: Build ARM64 binary
+      working-directory: ./cloudeye-exporter
+      run: |
+        go mod download
+        GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o cloudeye-exporter main.go
+        file cloudeye-exporter
+    
+    # ============================================
+    # 4. 创建配置文件
+    # ============================================
+    - name: Create config files
+      working-directory: ./cloudeye-exporter
+      run: |
+        cat > clouds.yml << 'EOF'
+        global:
+          port: 8080
+          scrape_configs:
+            - region: "cn-north-4"
+              access_key: ""
+              secret_key: ""
+        services:
+          - service: "SYS.GAUSSDBV5"
+            resources:
+              - "gaussdb_instance_id"
+        EOF
+        
+        cat > metric.yml << 'EOF'
+        metrics:
+          - namespace: SYS.GAUSSDBV5
+            metric_name:
+              - "cpu_usage"
+              - "mem_usage"
+              - "conn_count"
+              - "qps"
+              - "tps"
+              - "slow_queries"
+        EOF
+    
+    # ============================================
+    # 5. 创建 Dockerfile（ARM64 专用）
+    # ============================================
+    - name: Create Dockerfile
+      working-directory: ./cloudeye-exporter
+      run: |
+        cat > Dockerfile << 'EOF'
+        FROM arm64v8/alpine:latest
+        
+        RUN apk add --no-cache ca-certificates tzdata
+        
+        WORKDIR /app
+        
+        COPY cloudeye-exporter /app/cloudeye-exporter
+        COPY clouds.yml /app/clouds.yml
+        COPY metric.yml /app/metric.yml
+        
+        RUN chmod +x /app/cloudeye-exporter
+        
+        EXPOSE 8080
+        
+        ENTRYPOINT ["/app/cloudeye-exporter"]
+        CMD ["--config=/app/clouds.yml", "--metric=/app/metric.yml"]
+        EOF
+    
+    # ============================================
+    # 6. 设置 Docker Buildx
+    # ============================================
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    # ============================================
+    # 7. 构建 ARM64 镜像（不推送）
+    # ============================================
+    - name: Build ARM64 image
+      run: |
+        docker buildx build \
+          --platform linux/arm64 \
+          -t cloudeye-exporter:arm64 \
+          -o type=docker \
+          ./cloudeye-exporter
+    
+    # ============================================
+    # 8. 导出镜像为 tar 文件
+    # ============================================
+    - name: Save image as tar
+      run: |
+        docker save cloudeye-exporter:arm64 -o cloudeye-exporter-arm64.tar
+        ls -lh cloudeye-exporter-arm64.tar
+    
+    # ============================================
+    # 9. 上传 tar 文件作为 Artifact
+    # ============================================
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cloudeye-exporter-arm64
+        path: cloudeye-exporter-arm64.tar
+        compression-level: 0   # 不压缩，因为 tar 文件已经压缩
+    
+    # ============================================
+    # 10. 可选：同时上传二进制文件
+    # ============================================
+    - name: Upload binary artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cloudeye-exporter-arm64-binary
+        path: ./cloudeye-exporter/cloudeye-exporter
