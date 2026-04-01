@@ -1,4 +1,4 @@
-name: Build New Cloudeye Exporter ARM64 (Metric Supported)
+name: Build Cloudeye Exporter ARM64 (Metric Supported)
 
 on:
   workflow_dispatch:
@@ -9,32 +9,39 @@ jobs:
 
     steps:
     # =====================================================
-    # 1. Clone cloudeye-exporter (new version)
+    # 1. Clone cloudeye-exporter (official repo, main branch)
     # =====================================================
     - name: Clone cloudeye-exporter source
       run: |
         git clone https://github.com/huaweicloud/cloudeye-exporter.git
         cd cloudeye-exporter
-
-        # ✅ 切换到已验证支持 -metric 的稳定提交
-        git checkout 6c6a2b6
-
-        echo "Using commit:"
+        echo "Current commit:"
         git log -1 --oneline
 
     # =====================================================
-    # 2. Apply panic-fix patch (logger nil guard)
+    # 2. Verify metric flag support (FAIL FAST)
+    # =====================================================
+    - name: Verify -metric flag support
+      working-directory: ./cloudeye-exporter
+      run: |
+        if ! grep -R "flag.*metric" -n main.go; then
+          echo "ERROR: This version does NOT support -metric flag"
+          exit 1
+        fi
+        echo "OK: -metric flag supported"
+
+    # =====================================================
+    # 3. Patch logger panic bug (nil guard)
     # =====================================================
     - name: Patch logger panic bug
       working-directory: ./cloudeye-exporter
       run: |
         sed -i 's/logger.Errorf(/if logger != nil { logger.Errorf(/g' logs/logs.go
         sed -i 's/)$)/) }/g' logs/logs.go || true
-
-        echo "Patched logger nil guard"
+        echo "Logger panic guard patched"
 
     # =====================================================
-    # 3. Setup Go
+    # 4. Setup Go
     # =====================================================
     - name: Set up Go
       uses: actions/setup-go@v5
@@ -42,7 +49,7 @@ jobs:
         go-version: '1.21'
 
     # =====================================================
-    # 4. Build ARM64 binary
+    # 5. Build ARM64 binary
     # =====================================================
     - name: Build ARM64 binary
       working-directory: ./cloudeye-exporter
@@ -54,37 +61,34 @@ jobs:
         file cloudeye-exporter
 
     # =====================================================
-    # 5. Create Dockerfile
+    # 6. Create Dockerfile
     # =====================================================
     - name: Create Dockerfile
       working-directory: ./cloudeye-exporter
       run: |
         cat > Dockerfile << 'EOF'
         FROM arm64v8/alpine:3.19
-
         RUN apk add --no-cache ca-certificates tzdata
-
         WORKDIR /app
         COPY cloudeye-exporter /app/cloudeye-exporter
-
         EXPOSE 8080
         ENTRYPOINT ["/app/cloudeye-exporter"]
         EOF
 
     # =====================================================
-    # 6. Setup QEMU
+    # 7. Setup QEMU
     # =====================================================
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
     # =====================================================
-    # 7. Setup Docker Buildx
+    # 8. Setup Docker Buildx
     # =====================================================
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
     # =====================================================
-    # 8. Build ARM64 image
+    # 9. Build ARM64 image
     # =====================================================
     - name: Build ARM64 image
       run: |
@@ -95,14 +99,14 @@ jobs:
           ./cloudeye-exporter
 
     # =====================================================
-    # 9. Save image as tar
+    # 10. Save image as tar
     # =====================================================
     - name: Save image as tar
       run: |
         docker save cloudeye-exporter:new-arm64 -o cloudeye-exporter-new-arm64.tar
 
     # =====================================================
-    # 10. Upload image artifact
+    # 11. Upload image artifact
     # =====================================================
     - name: Upload image artifact
       uses: actions/upload-artifact@v4
