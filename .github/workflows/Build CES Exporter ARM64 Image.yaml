@@ -41,42 +41,6 @@ jobs:
           echo "Current commit:"
           git log -1 --oneline
 
-      - name: Inspect logs.go
-        working-directory: ./cloudeye-exporter
-        run: |
-          echo "First 50 lines of logs.go:"
-          head -50 logs/logs.go
-          echo ""
-          echo "Searching for Errorf:"
-          grep -n "Errorf" logs/logs.go | head -10
-
-      - name: Patch logs.go
-        working-directory: ./cloudeye-exporter
-        run: |
-          # Check if Errorf function exists
-          if ! grep -q "func.*Errorf" logs/logs.go; then
-            echo "Errorf function not found, skipping patch"
-            exit 0
-          fi
-
-          # Backup original file
-          cp logs/logs.go logs/logs.go.bak
-
-          # Add nil pointer check to Errorf
-          sed -i '/func.*Errorf.*{/a\
-          \    if lc == nil || lc.logger == nil {\
-          \        fmt.Printf("[ERROR] "+format+"\\n", v...)\
-          \        return\
-          \    }' logs/logs.go
-
-          # Ensure fmt package is imported
-          if ! grep -q '"fmt"' logs/logs.go; then
-            sed -i '/^import (/a\    "fmt"' logs/logs.go
-          fi
-
-          echo "Patch applied to logs.go"
-          grep -A10 "func.*Errorf" logs/logs.go | head -15
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
