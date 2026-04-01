@@ -1,0 +1,145 @@
+name: Build CES Exporter ARM64 Image (Stable)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    # =====================================================
+    # 1. Clone cloudeye-exporter source
+    # =====================================================
+    - name: Clone cloudeye-exporter source
+      run: |
+        git clone --depth 1 https://github.com/huaweicloud/cloudeye-exporter.git
+        cd cloudeye-exporter
+        echo "Commit:"
+        git log -1 --oneline
+
+    # =====================================================
+    # 2. Setup Go
+    # =====================================================
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    # =====================================================
+    # 3. Build ARM64 binary
+    # =====================================================
+    - name: Build ARM64 binary
+      working-directory: ./cloudeye-exporter
+      run: |
+        go mod download
+        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+          go build -ldflags="-s -w" \
+          -o cloudeye-exporter main.go
+        file cloudeye-exporter
+
+    # =====================================================
+    # 4. Create clouds.yml (CORRECT STRUCTURE)
+    # =====================================================
+    - name: Create clouds.yml
+      working-directory: ./cloudeye-exporter
+      run: |
+        cat > clouds.yml << 'EOF'
+        global:
+          port: 8080
+
+        auth:
+          auth_url: "https://iam.cn-north-4.myhuaweicloud.com/v3"
+          region: "cn-north-4"
+          project_id: "REPLACE_WITH_PROJECT_ID"
+          access_key: ""
+          secret_key: ""
+
+        services:
+          - service: "SYS.GAUSSDBV5"
+            resources:
+              - "gaussdb_instance_id"
+        EOF
+
+    # =====================================================
+    # 5. Create metric.yml
+    # =====================================================
+    - name: Create metric.yml
+      working-directory: ./cloudeye-exporter
+      run: |
+        cat > metric.yml << 'EOF'
+        metrics:
+          - namespace: SYS.GAUSSDBV5
+            metric_name:
+              - cpu_usage
+              - mem_usage
+              - conn_count
+              - qps
+              - tps
+        EOF
+
+    # =====================================================
+    # 6. Create Dockerfile (ARM64)
+    # =====================================================
+    - name: Create Dockerfile
+      working-directory: ./cloudeye-exporter
+      run: |
+        cat > Dockerfile << 'EOF'
+        FROM arm64v8/alpine:3.19
+
+        RUN apk add --no-cache ca-certificates tzdata
+
+        WORKDIR /app
+
+        COPY cloudeye-exporter /app/cloudeye-exporter
+        COPY clouds.yml /app/clouds.yml
+        COPY metric.yml /app/metric.yml
+
+        RUN chmod +x /app/cloudeye-exporter
+
+        EXPOSE 8080
+
+        ENTRYPOINT ["/app/cloudeye-exporter"]
+        CMD ["--config=/app/clouds.yml", "--metric=/app/metric.yml"]
+        EOF
+
+    # =====================================================
+    # 7. Setup QEMU
+    # =====================================================
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    # =====================================================
+    # 8. Setup Docker Buildx
+    # =====================================================
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # =====================================================
+    # 9. Build ARM64 image
+    # =====================================================
+    - name: Build ARM64 image
+      run: |
+        docker buildx build \
+          --platform linux/arm64 \
+          -t cloudeye-exporter:arm64 \
+          --load \
+          ./cloudeye-exporter
+
+    # =====================================================
+    # 10. Save image as tar
+    # =====================================================
+    - name: Save image as tar
+      run: |
+        docker save cloudeye-exporter:arm64 -o cloudeye-exporter-arm64.tar
+        ls -lh cloudeye-exporter-arm64.tar
+
+    # =====================================================
+    # 11. Upload image tar
+    # =====================================================
+    - name: Upload image artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cloudeye-exporter-arm64-image
+        path: cloudeye-exporter-arm64.tar
+        compression-level: 0
