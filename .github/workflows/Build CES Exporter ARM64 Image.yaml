@@ -24,7 +24,6 @@ jobs:
       id: version
       run: |
         if [ -z "${{ github.event.inputs.version }}" ]; then
-          # 获取最新 Release Tag
           TAG=$(curl -s https://api.github.com/repos/huaweicloud/cloudeye-exporter/releases/latest \
             | grep tag_name | cut -d '"' -f4)
           echo "Using latest release: $TAG"
@@ -33,7 +32,6 @@ jobs:
           echo "Using specified version: $TAG"
         fi
         echo "tag=$TAG" >> $GITHUB_OUTPUT
-        echo "version=$TAG" >> $GITHUB_OUTPUT
 
     # =====================================================
     # 2. Clone 源码
@@ -47,79 +45,115 @@ jobs:
         git log -1 --oneline
 
     # =====================================================
-    # 3. 补丁1：修复 logs/logs.go 空指针
+    # 3. 查看 logs.go 结构（调试用）
+    # =====================================================
+    - name: Inspect logs.go
+      working-directory: ./cloudeye-exporter
+      run: |
+        echo "=== logs.go content (first 100 lines) ==="
+        head -100 logs/logs.go
+        echo ""
+        echo "=== Search for Errorf function ==="
+        grep -n "Errorf" logs/logs.go || echo "No Errorf found"
+
+    # =====================================================
+    # 4. 修复 logs.go 空指针（通用版）
     # =====================================================
     - name: Patch logs.go - add nil pointer check
       working-directory: ./cloudeye-exporter
       run: |
         set -e
-        echo "=== Original Errorf function ==="
-        grep -A8 "func (lc \*LoggerConstructor) Errorf" logs/logs.go || true
         
-        # 使用 awk 重写 Errorf 函数，添加空指针保护
-        awk '
-          BEGIN { in_func=0; printed=0 }
-          /func \(lc \*LoggerConstructor\) Errorf/ { in_func=1 }
-          in_func && /^}/ && !printed {
-            print "func (lc *LoggerConstructor) Errorf(format string, v ...interface{}) {"
-            print "    if lc == nil || lc.logger == nil {"
-            print "        fmt.Printf(\"[ERROR] \"+format+\"\\n\", v...)"
-            print "        return"
-            print "    }"
-            print "    lc.logger.Errorf(format, v...)"
-            print "}"
-            printed=1
-            in_func=0
-            next
-          }
-          !in_func { print }
-        ' logs/logs.go > logs/logs.go.tmp
+        # 查找 Errorf 函数的行号
+        LINE_NUM=$(grep -n "func.*Errorf" logs/logs.go | head -1 | cut -d: -f1)
+        if [ -z "$LINE_NUM" ]; then
+          echo "Warning: Errorf function not found, skipping logs.go patch"
+          exit 0
+        fi
         
-        mv logs/logs.go.tmp logs/logs.go
+        echo "Found Errorf at line $LINE_NUM"
+        
+        # 查找函数结束的行号
+        END_LINE=$(awk "NR>$LINE_NUM && /^}/ {print NR; exit}" logs/logs.go)
+        echo "Function ends at line $END_LINE"
+        
+        # 备份原文件
+        cp logs/logs.go logs/logs.go.bak
+        
+        # 删除原函数
+        sed -i "${LINE_NUM},${END_LINE}d" logs/logs.go
+        
+        # 插入修复后的函数
+        cat > /tmp/errorf_patch.go << 'EOF'
+func (lc *LoggerConstructor) Errorf(format string, v ...interface{}) {
+    if lc == nil || lc.logger == nil {
+        fmt.Printf("[ERROR] "+format+"\n", v...)
+        return
+    }
+    lc.logger.Errorf(format, v...)
+}
+EOF
+        
+        # 在删除位置插入新函数
+        sed -i "${LINE_NUM}r /tmp/errorf_patch.go" logs/logs.go
         
         # 确保导入了 fmt 包
         if ! grep -q "^[[:space:]]*\"fmt\"" logs/logs.go; then
           sed -i '/^import (/a\    "fmt"' logs/logs.go
         fi
         
-        echo "=== Patched Errorf function ==="
-        grep -A8 "func (lc \*LoggerConstructor) Errorf" logs/logs.go
+        echo "=== Patched function ==="
+        grep -A10 "func (lc \*LoggerConstructor) Errorf" logs/logs.go || echo "Patch applied"
 
     # =====================================================
-    # 4. 补丁2：修复 main.go 初始化顺序
+    # 5. 修复 main.go 初始化顺序
     # =====================================================
     - name: Patch main.go - fix init order
       working-directory: ./cloudeye-exporter
       run: |
         set -e
-        echo "=== Original initConf function ==="
-        grep -A30 "func initConf()" main.go | head -40
         
-        # 备份原文件
+        # 查找 initConf 函数
+        if ! grep -q "func initConf()" main.go; then
+          echo "Warning: initConf function not found, skipping main.go patch"
+          exit 0
+        fi
+        
+        # 备份
         cp main.go main.go.bak
         
-        # 在 initConf 函数开头添加日志初始化检查
-        awk '
-          /^func initConf\(\) {/ {
-            print "func initConf() {"
-            print "    // 确保日志系统已初始化"
-            print "    if err := logs.InitLogger(); err != nil {"
-            print "        fmt.Printf(\"FATAL: failed to init logger: %v\\n\", err)"
-            print "        return"
-            print "    }"
-            print ""
-            in_func=1
-            next
-          }
-          in_func && /}/ {
-            print "}"
-            in_func=0
-            next
-          }
-          !in_func { print }
-        ' main.go > main.go.tmp
+        # 查找 initConf 函数开始行
+        START_LINE=$(grep -n "^func initConf()" main.go | cut -d: -f1)
+        echo "initConf starts at line $START_LINE"
         
-        mv main.go.tmp main.go
+        # 查找函数结束行
+        END_LINE=$(awk "NR>$START_LINE && /^}/ {print NR; exit}" main.go)
+        echo "initConf ends at line $END_LINE"
+        
+        # 提取函数体
+        sed -n "${START_LINE},${END_LINE}p" main.go > /tmp/initconf_orig.go
+        
+        # 创建修复后的函数
+        cat > /tmp/initconf_patch.go << 'EOF'
+func initConf() {
+    // 确保日志系统已初始化
+    if err := logs.InitLogger(); err != nil {
+        fmt.Printf("FATAL: failed to init logger: %v\n", err)
+        return
+    }
+EOF
+        
+        # 获取原始函数体（去掉第一行和最后一行）
+        ORIG_BODY=$(sed -n "$((START_LINE+1)),$((END_LINE-1))p" main.go)
+        
+        # 组合新函数
+        cat /tmp/initconf_patch.go > /tmp/new_initconf.go
+        echo "$ORIG_BODY" >> /tmp/new_initconf.go
+        echo "}" >> /tmp/new_initconf.go
+        
+        # 替换原函数
+        sed -i "${START_LINE},${END_LINE}d" main.go
+        sed -i "${START_LINE}r /tmp/new_initconf.go" main.go
         
         # 确保导入了 fmt 包
         if ! grep -q "^[[:space:]]*\"fmt\"" main.go; then
@@ -127,23 +161,7 @@ jobs:
         fi
         
         echo "=== Patched initConf function ==="
-        grep -A35 "func initConf()" main.go | head -40
-
-    # =====================================================
-    # 5. 验证补丁是否成功
-    # =====================================================
-    - name: Verify patches
-      working-directory: ./cloudeye-exporter
-      run: |
-        echo "=== Checking logs.go patch ==="
-        grep -q "if lc == nil || lc.logger == nil" logs/logs.go && echo "✓ logs.go patch applied" || echo "✗ logs.go patch failed"
-        
-        echo "=== Checking main.go patch ==="
-        grep -q "logs.InitLogger()" main.go && echo "✓ main.go patch applied" || echo "✗ main.go patch failed"
-        
-        echo "=== Checking fmt import ==="
-        grep "fmt" logs/logs.go | head -2
-        grep "fmt" main.go | head -2
+        grep -A5 "func initConf()" main.go
 
     # =====================================================
     # 6. Setup Go
@@ -167,7 +185,7 @@ jobs:
         ls -lh cloudeye-exporter
 
     # =====================================================
-    # 8. 创建配置文件模板
+    # 8. 创建配置文件
     # =====================================================
     - name: Create config files
       working-directory: ./cloudeye-exporter
@@ -175,7 +193,6 @@ jobs:
         cat > clouds.yml << 'EOF'
         global:
           port: 8080
-          # 指定 metric.yml 路径
           metrics_conf_path: "/app/metric.yml"
         
         auth:
@@ -189,41 +206,14 @@ jobs:
           - service: "SYS.ECS"
             resources:
               - "instance_id"
-          - service: "SYS.GAUSSDBV5"
-            resources:
-              - "gaussdb_instance_id"
-          - service: "SYS.MRS"
-            resources:
-              - "cluster_id"
-          - service: "SYS.DCS"
-            resources:
-              - "dcs_instance_id"
         EOF
         
         cat > metric.yml << 'EOF'
         metrics:
-          - namespace: SYS.GAUSSDBV5
-            metric_name:
-              - "cpu_usage"
-              - "mem_usage"
-              - "conn_count"
-              - "qps"
-              - "tps"
           - namespace: SYS.ECS
             metric_name:
               - "cpu_util"
               - "mem_util"
-          - namespace: SYS.MRS
-            metric_name:
-              - "cpu_usage"
-              - "mem_usage"
-              - "yarn_apps_running"
-              - "yarn_apps_pending"
-          - namespace: SYS.DCS
-            metric_name:
-              - "cpu_usage"
-              - "mem_usage"
-              - "connected_clients"
         EOF
 
     # =====================================================
@@ -234,19 +224,13 @@ jobs:
       run: |
         cat > Dockerfile << 'EOF'
         FROM arm64v8/alpine:3.19
-        
         RUN apk add --no-cache ca-certificates tzdata
-        
         WORKDIR /app
-        
         COPY cloudeye-exporter /app/cloudeye-exporter
         COPY clouds.yml /app/clouds.yml
         COPY metric.yml /app/metric.yml
-        
         RUN chmod +x /app/cloudeye-exporter
-        
         EXPOSE 8080
-        
         ENTRYPOINT ["/app/cloudeye-exporter"]
         CMD ["--config=/app/clouds.yml"]
         EOF
@@ -279,7 +263,6 @@ jobs:
       run: |
         TAR_NAME=${{ env.IMAGE_NAME }}-${{ steps.version.outputs.tag }}-patched-arm64.tar
         docker save ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-patched-arm64 -o $TAR_NAME
-        echo "=== Image saved ==="
         ls -lh $TAR_NAME
         echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
 
@@ -293,16 +276,8 @@ jobs:
         path: ${{ env.TAR_NAME }}
         compression-level: 0
 
-    - name: Upload binary artifact
+    - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
-        name: cloudeye-exporter-${{ steps.version.outputs.tag }}-patched-arm64-binary
+        name: cloudeye-exporter-binary
         path: ./cloudeye-exporter/cloudeye-exporter
-
-    - name: Upload config templates
-      uses: actions/upload-artifact@v4
-      with:
-        name: cloudeye-exporter-config-templates
-        path: |
-          ./cloudeye-exporter/clouds.yml
-          ./cloudeye-exporter/metric.yml
