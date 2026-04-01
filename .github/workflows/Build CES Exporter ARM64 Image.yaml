@@ -1,7 +1,12 @@
-name: Build CES Exporter ARM64 (Latest Release)
+name: Build CES Exporter ARM64 (Patched)
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '指定版本（留空则使用最新 Release）'
+        required: false
+        default: ''
 
 env:
   IMAGE_NAME: cloudeye-exporter
@@ -13,29 +18,135 @@ jobs:
 
     steps:
     # =====================================================
-    # 1. 获取最新 Release Tag
+    # 1. 获取版本信息
     # =====================================================
-    - name: Get latest release tag
-      id: release
+    - name: Get version info
+      id: version
       run: |
-        TAG=$(curl -s https://api.github.com/repos/huaweicloud/cloudeye-exporter/releases/latest \
-          | grep tag_name | cut -d '"' -f4)
-        echo "Using release: $TAG"
+        if [ -z "${{ github.event.inputs.version }}" ]; then
+          # 获取最新 Release Tag
+          TAG=$(curl -s https://api.github.com/repos/huaweicloud/cloudeye-exporter/releases/latest \
+            | grep tag_name | cut -d '"' -f4)
+          echo "Using latest release: $TAG"
+        else
+          TAG="${{ github.event.inputs.version }}"
+          echo "Using specified version: $TAG"
+        fi
         echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "version=$TAG" >> $GITHUB_OUTPUT
 
     # =====================================================
-    # 2. Clone cloudeye-exporter (最新 Release)
+    # 2. Clone 源码
     # =====================================================
     - name: Clone cloudeye-exporter
       run: |
         git clone https://github.com/huaweicloud/cloudeye-exporter.git
         cd cloudeye-exporter
-        git checkout ${{ steps.release.outputs.tag }}
-        echo "=== Latest commit ==="
+        git checkout ${{ steps.version.outputs.tag }}
+        echo "=== Current commit ==="
         git log -1 --oneline
 
     # =====================================================
-    # 3. Setup Go
+    # 3. 补丁1：修复 logs/logs.go 空指针
+    # =====================================================
+    - name: Patch logs.go - add nil pointer check
+      working-directory: ./cloudeye-exporter
+      run: |
+        set -e
+        echo "=== Original Errorf function ==="
+        grep -A8 "func (lc \*LoggerConstructor) Errorf" logs/logs.go || true
+        
+        # 使用 awk 重写 Errorf 函数，添加空指针保护
+        awk '
+          BEGIN { in_func=0; printed=0 }
+          /func \(lc \*LoggerConstructor\) Errorf/ { in_func=1 }
+          in_func && /^}/ && !printed {
+            print "func (lc *LoggerConstructor) Errorf(format string, v ...interface{}) {"
+            print "    if lc == nil || lc.logger == nil {"
+            print "        fmt.Printf(\"[ERROR] \"+format+\"\\n\", v...)"
+            print "        return"
+            print "    }"
+            print "    lc.logger.Errorf(format, v...)"
+            print "}"
+            printed=1
+            in_func=0
+            next
+          }
+          !in_func { print }
+        ' logs/logs.go > logs/logs.go.tmp
+        
+        mv logs/logs.go.tmp logs/logs.go
+        
+        # 确保导入了 fmt 包
+        if ! grep -q "^[[:space:]]*\"fmt\"" logs/logs.go; then
+          sed -i '/^import (/a\    "fmt"' logs/logs.go
+        fi
+        
+        echo "=== Patched Errorf function ==="
+        grep -A8 "func (lc \*LoggerConstructor) Errorf" logs/logs.go
+
+    # =====================================================
+    # 4. 补丁2：修复 main.go 初始化顺序
+    # =====================================================
+    - name: Patch main.go - fix init order
+      working-directory: ./cloudeye-exporter
+      run: |
+        set -e
+        echo "=== Original initConf function ==="
+        grep -A30 "func initConf()" main.go | head -40
+        
+        # 备份原文件
+        cp main.go main.go.bak
+        
+        # 在 initConf 函数开头添加日志初始化检查
+        awk '
+          /^func initConf\(\) {/ {
+            print "func initConf() {"
+            print "    // 确保日志系统已初始化"
+            print "    if err := logs.InitLogger(); err != nil {"
+            print "        fmt.Printf(\"FATAL: failed to init logger: %v\\n\", err)"
+            print "        return"
+            print "    }"
+            print ""
+            in_func=1
+            next
+          }
+          in_func && /}/ {
+            print "}"
+            in_func=0
+            next
+          }
+          !in_func { print }
+        ' main.go > main.go.tmp
+        
+        mv main.go.tmp main.go
+        
+        # 确保导入了 fmt 包
+        if ! grep -q "^[[:space:]]*\"fmt\"" main.go; then
+          sed -i '/^import (/a\    "fmt"' main.go
+        fi
+        
+        echo "=== Patched initConf function ==="
+        grep -A35 "func initConf()" main.go | head -40
+
+    # =====================================================
+    # 5. 验证补丁是否成功
+    # =====================================================
+    - name: Verify patches
+      working-directory: ./cloudeye-exporter
+      run: |
+        echo "=== Checking logs.go patch ==="
+        grep -q "if lc == nil || lc.logger == nil" logs/logs.go && echo "✓ logs.go patch applied" || echo "✗ logs.go patch failed"
+        
+        echo "=== Checking main.go patch ==="
+        grep -q "logs.InitLogger()" main.go && echo "✓ main.go patch applied" || echo "✗ main.go patch failed"
+        
+        echo "=== Checking fmt import ==="
+        grep "fmt" logs/logs.go | head -2
+        grep "fmt" main.go | head -2
+
+    # =====================================================
+    # 6. Setup Go
     # =====================================================
     - name: Set up Go
       uses: actions/setup-go@v5
@@ -43,7 +154,7 @@ jobs:
         go-version: '1.21'
 
     # =====================================================
-    # 4. Build ARM64 binary
+    # 7. Build ARM64 binary
     # =====================================================
     - name: Build ARM64 binary
       working-directory: ./cloudeye-exporter
@@ -56,17 +167,16 @@ jobs:
         ls -lh cloudeye-exporter
 
     # =====================================================
-    # 5. 创建配置文件模板
+    # 8. 创建配置文件模板
     # =====================================================
     - name: Create config files
       working-directory: ./cloudeye-exporter
       run: |
-        # 创建 clouds.yml 配置模板
         cat > clouds.yml << 'EOF'
         global:
           port: 8080
-          # 可选：指定 metric.yml 路径（如果放在同目录可省略）
-          # metrics_conf_path: "/app/metric.yml"
+          # 指定 metric.yml 路径
+          metrics_conf_path: "/app/metric.yml"
         
         auth:
           auth_url: "https://iam.{region}.myhuaweicloud.com/v3"
@@ -88,16 +198,8 @@ jobs:
           - service: "SYS.DCS"
             resources:
               - "dcs_instance_id"
-          - service: "SYS.ELB"
-            resources:
-              - "loadbalancer_id"
-          - service: "SYS.ROMA"
-            resources:
-              - "instance_id"
-              - "kafka_instance_id,kafka_broker"
         EOF
         
-        # 创建 metric.yml 指标筛选模板
         cat > metric.yml << 'EOF'
         metrics:
           - namespace: SYS.GAUSSDBV5
@@ -107,62 +209,25 @@ jobs:
               - "conn_count"
               - "qps"
               - "tps"
-              - "slow_queries"
-              - "deadlock_count"
-          
           - namespace: SYS.ECS
             metric_name:
               - "cpu_util"
               - "mem_util"
-              - "disk_read_bytes_rate"
-              - "disk_write_bytes_rate"
-              - "network_incoming_bytes_rate"
-              - "network_outgoing_bytes_rate"
-          
           - namespace: SYS.MRS
             metric_name:
               - "cpu_usage"
               - "mem_usage"
-              - "disk_usage"
-              - "load_average_1m"
-              - "hdfs_used_capacity"
-              - "hdfs_total_capacity"
               - "yarn_apps_running"
               - "yarn_apps_pending"
-          
           - namespace: SYS.DCS
             metric_name:
               - "cpu_usage"
               - "mem_usage"
               - "connected_clients"
-              - "used_memory"
-              - "hit_rate"
-          
-          - namespace: SYS.ELB
-            metric_name:
-              - "active_connections"
-              - "request_count"
-              - "response_time"
-              - "http_code_4xx"
-              - "http_code_5xx"
-          
-          - namespace: SYS.ROMA
-            metric_name:
-              - "current_partitions"
-              - "current_topics"
-              - "group_msgs"
-              - "broker_data_size"
-              - "broker_messages_in_rate"
-              - "broker_cpu_usage"
-              - "broker_disk_usage"
-              - "broker_alive"
         EOF
-        
-        echo "=== Config files created ==="
-        ls -la *.yml
 
     # =====================================================
-    # 6. 创建 Dockerfile
+    # 9. 创建 Dockerfile
     # =====================================================
     - name: Create Dockerfile
       working-directory: ./cloudeye-exporter
@@ -174,77 +239,70 @@ jobs:
         
         WORKDIR /app
         
-        # 复制二进制文件
         COPY cloudeye-exporter /app/cloudeye-exporter
-        
-        # 复制配置文件模板
-        COPY clouds.yml /app/clouds.yml.example
-        COPY metric.yml /app/metric.yml.example
-        
-        # 创建数据目录
-        RUN mkdir -p /app/logs
+        COPY clouds.yml /app/clouds.yml
+        COPY metric.yml /app/metric.yml
         
         RUN chmod +x /app/cloudeye-exporter
         
         EXPOSE 8080
         
-        # 使用环境变量替换配置文件中的占位符
         ENTRYPOINT ["/app/cloudeye-exporter"]
         CMD ["--config=/app/clouds.yml"]
         EOF
-        
-        cat Dockerfile
 
     # =====================================================
-    # 7. 设置 QEMU（用于模拟 ARM64 架构）
+    # 10. Setup QEMU & Buildx
     # =====================================================
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
-    # =====================================================
-    # 8. 设置 Docker Buildx
-    # =====================================================
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
     # =====================================================
-    # 9. 构建 ARM64 镜像（仅本地，不推送）
+    # 11. Build ARM64 image
     # =====================================================
     - name: Build ARM64 image
       run: |
         docker buildx build \
           --platform linux/arm64 \
           --load \
-          -t ${{ env.IMAGE_NAME }}:${{ steps.release.outputs.tag }}-arm64 \
+          -t ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-patched-arm64 \
           ./cloudeye-exporter
-        docker images | grep cloudeye-exporter
+        docker images | grep ${{ env.IMAGE_NAME }}
 
     # =====================================================
-    # 10. 导出镜像为 tar 文件
+    # 12. Save image as tar
     # =====================================================
     - name: Save image as tar
       run: |
-        TAR_NAME=${{ env.IMAGE_NAME }}-${{ steps.release.outputs.tag }}-arm64.tar
-        docker save ${{ env.IMAGE_NAME }}:${{ steps.release.outputs.tag }}-arm64 -o $TAR_NAME
+        TAR_NAME=${{ env.IMAGE_NAME }}-${{ steps.version.outputs.tag }}-patched-arm64.tar
+        docker save ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-patched-arm64 -o $TAR_NAME
         echo "=== Image saved ==="
         ls -lh $TAR_NAME
         echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
 
     # =====================================================
-    # 11. 上传 tar 文件作为 Artifact
+    # 13. Upload artifacts
     # =====================================================
     - name: Upload image tar
       uses: actions/upload-artifact@v4
       with:
-        name: cloudeye-exporter-${{ steps.release.outputs.tag }}-arm64
+        name: cloudeye-exporter-${{ steps.version.outputs.tag }}-patched-arm64
         path: ${{ env.TAR_NAME }}
         compression-level: 0
 
-    # =====================================================
-    # 12. 可选：同时上传二进制文件
-    # =====================================================
     - name: Upload binary artifact
       uses: actions/upload-artifact@v4
       with:
-        name: cloudeye-exporter-${{ steps.release.outputs.tag }}-arm64-binary
+        name: cloudeye-exporter-${{ steps.version.outputs.tag }}-patched-arm64-binary
         path: ./cloudeye-exporter/cloudeye-exporter
+
+    - name: Upload config templates
+      uses: actions/upload-artifact@v4
+      with:
+        name: cloudeye-exporter-config-templates
+        path: |
+          ./cloudeye-exporter/clouds.yml
+          ./cloudeye-exporter/metric.yml
