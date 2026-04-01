@@ -1,283 +1,171 @@
-name: Build CES Exporter ARM64 (Patched)
+name: Build CES Exporter ARM64 Image
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: '指定版本（留空则使用最新 Release）'
+        description: 'Specify version (leave empty for latest release)'
         required: false
         default: ''
+        type: string
 
 env:
   IMAGE_NAME: cloudeye-exporter
-  ARCH: arm64
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    # =====================================================
-    # 1. 获取版本信息
-    # =====================================================
-    - name: Get version info
-      id: version
-      run: |
-        if [ -z "${{ github.event.inputs.version }}" ]; then
-          TAG=$(curl -s https://api.github.com/repos/huaweicloud/cloudeye-exporter/releases/latest \
-            | grep tag_name | cut -d '"' -f4)
-          echo "Using latest release: $TAG"
-        else
-          TAG="${{ github.event.inputs.version }}"
-          echo "Using specified version: $TAG"
-        fi
-        echo "tag=$TAG" >> $GITHUB_OUTPUT
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # =====================================================
-    # 2. Clone 源码
-    # =====================================================
-    - name: Clone cloudeye-exporter
-      run: |
-        git clone https://github.com/huaweicloud/cloudeye-exporter.git
-        cd cloudeye-exporter
-        git checkout ${{ steps.version.outputs.tag }}
-        echo "=== Current commit ==="
-        git log -1 --oneline
+      - name: Get version info
+        id: version
+        run: |
+          if [ -z "${{ github.event.inputs.version }}" ]; then
+            TAG=$(curl -s https://api.github.com/repos/huaweicloud/cloudeye-exporter/releases/latest \
+              | grep tag_name | cut -d '"' -f4)
+            echo "Using latest release: $TAG"
+          else
+            TAG="${{ github.event.inputs.version }}"
+            echo "Using specified version: $TAG"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-    # =====================================================
-    # 3. 查看 logs.go 结构（调试用）
-    # =====================================================
-    - name: Inspect logs.go
-      working-directory: ./cloudeye-exporter
-      run: |
-        echo "=== logs.go content (first 100 lines) ==="
-        head -100 logs/logs.go
-        echo ""
-        echo "=== Search for Errorf function ==="
-        grep -n "Errorf" logs/logs.go || echo "No Errorf found"
+      - name: Clone cloudeye-exporter
+        run: |
+          git clone https://github.com/huaweicloud/cloudeye-exporter.git
+          cd cloudeye-exporter
+          git checkout ${{ steps.version.outputs.tag }}
+          echo "Current commit:"
+          git log -1 --oneline
 
-    # =====================================================
-    # 4. 修复 logs.go 空指针（通用版）
-    # =====================================================
-    - name: Patch logs.go - add nil pointer check
-      working-directory: ./cloudeye-exporter
-      run: |
-        set -e
-        
-        # 查找 Errorf 函数的行号
-        LINE_NUM=$(grep -n "func.*Errorf" logs/logs.go | head -1 | cut -d: -f1)
-        if [ -z "$LINE_NUM" ]; then
-          echo "Warning: Errorf function not found, skipping logs.go patch"
-          exit 0
-        fi
-        
-        echo "Found Errorf at line $LINE_NUM"
-        
-        # 查找函数结束的行号
-        END_LINE=$(awk "NR>$LINE_NUM && /^}/ {print NR; exit}" logs/logs.go)
-        echo "Function ends at line $END_LINE"
-        
-        # 备份原文件
-        cp logs/logs.go logs/logs.go.bak
-        
-        # 删除原函数
-        sed -i "${LINE_NUM},${END_LINE}d" logs/logs.go
-        
-        # 插入修复后的函数
-        cat > /tmp/errorf_patch.go << 'EOF'
-func (lc *LoggerConstructor) Errorf(format string, v ...interface{}) {
-    if lc == nil || lc.logger == nil {
-        fmt.Printf("[ERROR] "+format+"\n", v...)
-        return
-    }
-    lc.logger.Errorf(format, v...)
-}
-EOF
-        
-        # 在删除位置插入新函数
-        sed -i "${LINE_NUM}r /tmp/errorf_patch.go" logs/logs.go
-        
-        # 确保导入了 fmt 包
-        if ! grep -q "^[[:space:]]*\"fmt\"" logs/logs.go; then
-          sed -i '/^import (/a\    "fmt"' logs/logs.go
-        fi
-        
-        echo "=== Patched function ==="
-        grep -A10 "func (lc \*LoggerConstructor) Errorf" logs/logs.go || echo "Patch applied"
+      - name: Inspect logs.go
+        working-directory: ./cloudeye-exporter
+        run: |
+          echo "First 50 lines of logs.go:"
+          head -50 logs/logs.go
+          echo ""
+          echo "Searching for Errorf:"
+          grep -n "Errorf" logs/logs.go | head -10
 
-    # =====================================================
-    # 5. 修复 main.go 初始化顺序
-    # =====================================================
-    - name: Patch main.go - fix init order
-      working-directory: ./cloudeye-exporter
-      run: |
-        set -e
-        
-        # 查找 initConf 函数
-        if ! grep -q "func initConf()" main.go; then
-          echo "Warning: initConf function not found, skipping main.go patch"
-          exit 0
-        fi
-        
-        # 备份
-        cp main.go main.go.bak
-        
-        # 查找 initConf 函数开始行
-        START_LINE=$(grep -n "^func initConf()" main.go | cut -d: -f1)
-        echo "initConf starts at line $START_LINE"
-        
-        # 查找函数结束行
-        END_LINE=$(awk "NR>$START_LINE && /^}/ {print NR; exit}" main.go)
-        echo "initConf ends at line $END_LINE"
-        
-        # 提取函数体
-        sed -n "${START_LINE},${END_LINE}p" main.go > /tmp/initconf_orig.go
-        
-        # 创建修复后的函数
-        cat > /tmp/initconf_patch.go << 'EOF'
-func initConf() {
-    // 确保日志系统已初始化
-    if err := logs.InitLogger(); err != nil {
-        fmt.Printf("FATAL: failed to init logger: %v\n", err)
-        return
-    }
-EOF
-        
-        # 获取原始函数体（去掉第一行和最后一行）
-        ORIG_BODY=$(sed -n "$((START_LINE+1)),$((END_LINE-1))p" main.go)
-        
-        # 组合新函数
-        cat /tmp/initconf_patch.go > /tmp/new_initconf.go
-        echo "$ORIG_BODY" >> /tmp/new_initconf.go
-        echo "}" >> /tmp/new_initconf.go
-        
-        # 替换原函数
-        sed -i "${START_LINE},${END_LINE}d" main.go
-        sed -i "${START_LINE}r /tmp/new_initconf.go" main.go
-        
-        # 确保导入了 fmt 包
-        if ! grep -q "^[[:space:]]*\"fmt\"" main.go; then
-          sed -i '/^import (/a\    "fmt"' main.go
-        fi
-        
-        echo "=== Patched initConf function ==="
-        grep -A5 "func initConf()" main.go
+      - name: Patch logs.go
+        working-directory: ./cloudeye-exporter
+        run: |
+          # Check if Errorf function exists
+          if ! grep -q "func.*Errorf" logs/logs.go; then
+            echo "Errorf function not found, skipping patch"
+            exit 0
+          fi
 
-    # =====================================================
-    # 6. Setup Go
-    # =====================================================
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.21'
+          # Backup original file
+          cp logs/logs.go logs/logs.go.bak
 
-    # =====================================================
-    # 7. Build ARM64 binary
-    # =====================================================
-    - name: Build ARM64 binary
-      working-directory: ./cloudeye-exporter
-      run: |
-        go mod tidy
-        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-          go build -ldflags="-s -w" \
-          -o cloudeye-exporter main.go
-        file cloudeye-exporter
-        ls -lh cloudeye-exporter
+          # Add nil pointer check to Errorf
+          sed -i '/func.*Errorf.*{/a\
+          \    if lc == nil || lc.logger == nil {\
+          \        fmt.Printf("[ERROR] "+format+"\\n", v...)\
+          \        return\
+          \    }' logs/logs.go
 
-    # =====================================================
-    # 8. 创建配置文件
-    # =====================================================
-    - name: Create config files
-      working-directory: ./cloudeye-exporter
-      run: |
-        cat > clouds.yml << 'EOF'
-        global:
-          port: 8080
-          metrics_conf_path: "/app/metric.yml"
-        
-        auth:
-          auth_url: "https://iam.{region}.myhuaweicloud.com/v3"
-          project_name: "{your_project_name}"
-          access_key: ""
-          secret_key: ""
-          region: "{your_region}"
-        
-        services:
-          - service: "SYS.ECS"
-            resources:
-              - "instance_id"
-        EOF
-        
-        cat > metric.yml << 'EOF'
-        metrics:
-          - namespace: SYS.ECS
-            metric_name:
-              - "cpu_util"
-              - "mem_util"
-        EOF
+          # Ensure fmt package is imported
+          if ! grep -q '"fmt"' logs/logs.go; then
+            sed -i '/^import (/a\    "fmt"' logs/logs.go
+          fi
 
-    # =====================================================
-    # 9. 创建 Dockerfile
-    # =====================================================
-    - name: Create Dockerfile
-      working-directory: ./cloudeye-exporter
-      run: |
-        cat > Dockerfile << 'EOF'
-        FROM arm64v8/alpine:3.19
-        RUN apk add --no-cache ca-certificates tzdata
-        WORKDIR /app
-        COPY cloudeye-exporter /app/cloudeye-exporter
-        COPY clouds.yml /app/clouds.yml
-        COPY metric.yml /app/metric.yml
-        RUN chmod +x /app/cloudeye-exporter
-        EXPOSE 8080
-        ENTRYPOINT ["/app/cloudeye-exporter"]
-        CMD ["--config=/app/clouds.yml"]
-        EOF
+          echo "Patch applied to logs.go"
+          grep -A10 "func.*Errorf" logs/logs.go | head -15
 
-    # =====================================================
-    # 10. Setup QEMU & Buildx
-    # =====================================================
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Build ARM64 binary
+        working-directory: ./cloudeye-exporter
+        run: |
+          go mod tidy
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o cloudeye-exporter main.go
+          file cloudeye-exporter
+          ls -lh cloudeye-exporter
 
-    # =====================================================
-    # 11. Build ARM64 image
-    # =====================================================
-    - name: Build ARM64 image
-      run: |
-        docker buildx build \
-          --platform linux/arm64 \
-          --load \
-          -t ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-patched-arm64 \
-          ./cloudeye-exporter
-        docker images | grep ${{ env.IMAGE_NAME }}
+      - name: Create config files
+        working-directory: ./cloudeye-exporter
+        run: |
+          cat > clouds.yml << 'EOF'
+          global:
+            port: 8080
+            metrics_conf_path: "/app/metric.yml"
 
-    # =====================================================
-    # 12. Save image as tar
-    # =====================================================
-    - name: Save image as tar
-      run: |
-        TAR_NAME=${{ env.IMAGE_NAME }}-${{ steps.version.outputs.tag }}-patched-arm64.tar
-        docker save ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-patched-arm64 -o $TAR_NAME
-        ls -lh $TAR_NAME
-        echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
+          auth:
+            auth_url: "https://iam.{region}.myhuaweicloud.com/v3"
+            project_name: "{your_project_name}"
+            access_key: ""
+            secret_key: ""
+            region: "{your_region}"
 
-    # =====================================================
-    # 13. Upload artifacts
-    # =====================================================
-    - name: Upload image tar
-      uses: actions/upload-artifact@v4
-      with:
-        name: cloudeye-exporter-${{ steps.version.outputs.tag }}-patched-arm64
-        path: ${{ env.TAR_NAME }}
-        compression-level: 0
+          services:
+            - service: "SYS.ECS"
+              resources:
+                - "instance_id"
+          EOF
 
-    - name: Upload binary
-      uses: actions/upload-artifact@v4
-      with:
-        name: cloudeye-exporter-binary
-        path: ./cloudeye-exporter/cloudeye-exporter
+          cat > metric.yml << 'EOF'
+          metrics:
+            - namespace: SYS.ECS
+              metric_name:
+                - "cpu_util"
+                - "mem_util"
+          EOF
+
+      - name: Create Dockerfile
+        working-directory: ./cloudeye-exporter
+        run: |
+          cat > Dockerfile << 'EOF'
+          FROM arm64v8/alpine:3.19
+          RUN apk add --no-cache ca-certificates tzdata
+          WORKDIR /app
+          COPY cloudeye-exporter /app/cloudeye-exporter
+          COPY clouds.yml /app/clouds.yml
+          COPY metric.yml /app/metric.yml
+          RUN chmod +x /app/cloudeye-exporter
+          EXPOSE 8080
+          ENTRYPOINT ["/app/cloudeye-exporter"]
+          CMD ["--config=/app/clouds.yml"]
+          EOF
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ARM64 image
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --load \
+            -t ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-arm64 \
+            ./cloudeye-exporter
+          docker images | grep ${{ env.IMAGE_NAME }}
+
+      - name: Save image as tar
+        run: |
+          TAR_NAME=${{ env.IMAGE_NAME }}-${{ steps.version.outputs.tag }}-arm64.tar
+          docker save ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-arm64 -o "$TAR_NAME"
+          echo "tar_name=$TAR_NAME" >> $GITHUB_OUTPUT
+          ls -lh "$TAR_NAME"
+
+      - name: Upload image tar
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudeye-exporter-${{ steps.version.outputs.tag }}-arm64
+          path: ${{ env.IMAGE_NAME }}-${{ steps.version.outputs.tag }}-arm64.tar
+          compression-level: 0
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudeye-exporter-${{ steps.version.outputs.tag }}-arm64-binary
+          path: ./cloudeye-exporter/cloudeye-exporter
