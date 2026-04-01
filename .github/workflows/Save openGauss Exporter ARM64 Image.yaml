@@ -17,14 +17,13 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Clone openGauss-exporter source
+    # 使用 GitHub 上的镜像仓库 (更稳定，无需认证)
+    - name: Clone openGauss-exporter source (from GitHub mirror)
       run: |
-        git clone https://gitee.com/opengauss/openGauss-exporter.git
+        git clone --depth 1 https://github.com/Enmotech/opengauss_exporter.git openGauss-exporter
         cd openGauss-exporter
-        # 获取最新 tag（如果有的话）
-        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "latest")
-        echo "Building version: $LATEST_TAG"
-        echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+        echo "Latest commit:"
+        git log -1 --oneline
 
     - name: Create Dockerfile for ARM64
       run: |
@@ -40,60 +39,27 @@ jobs:
         
         WORKDIR /workspace
         
-        # 复制源码
         COPY . .
         
-        # 下载依赖并编译
         RUN go mod download
         RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
             go build -ldflags="-s -w" \
-            -o openGauss-exporter cmd/openGauss-exporter/main.go
+            -o opengauss_exporter cmd/opengauss_exporter/main.go
         
-        # 运行阶段
         FROM --platform=$TARGETPLATFORM alpine:3.19
         
         RUN apk add --no-cache ca-certificates tzdata
         
         WORKDIR /app
         
-        COPY --from=builder /workspace/openGauss-exporter /app/openGauss-exporter
+        COPY --from=builder /workspace/opengauss_exporter /app/opengauss_exporter
         
-        RUN chmod +x /app/openGauss-exporter
-        
-        # 创建默认配置文件模板
-        RUN cat > /app/default-queries.yaml << 'QUERIES'
-        # 默认查询配置
-        pg_stat_database:
-          query: "SELECT datname, numbackends, xact_commit, xact_rollback, blks_read, blks_hit, tup_returned, tup_fetched, tup_inserted, tup_updated, tup_deleted FROM pg_stat_database WHERE datname NOT IN ('template0', 'template1')"
-          metrics:
-            - datname:
-                usage: "LABEL"
-                description: "Database name"
-            - numbackends:
-                usage: "GAUGE"
-                description: "Number of backends currently connected to this database"
-            - xact_commit:
-                usage: "COUNTER"
-                description: "Number of transactions in this database that have been committed"
-            - xact_rollback:
-                usage: "COUNTER"
-                description: "Number of transactions in this database that have been rolled back"
-        
-        pg_stat_bgwriter:
-          query: "SELECT checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_alloc FROM pg_stat_bgwriter"
-          metrics:
-            - checkpoints_timed:
-                usage: "COUNTER"
-                description: "Number of scheduled checkpoints that have been performed"
-            - checkpoints_req:
-                usage: "COUNTER"
-                description: "Number of requested checkpoints that have been performed"
-        QUERIES
+        RUN chmod +x /app/opengauss_exporter
         
         EXPOSE 9187
         
-        ENTRYPOINT ["/app/openGauss-exporter"]
-        CMD ["--web.listen-address=:9187", "--config.file=/app/default-queries.yaml"]
+        ENTRYPOINT ["/app/opengauss_exporter"]
+        CMD ["--web.listen-address=:9187"]
         EOF
 
     - name: Build ARM64 Docker image
@@ -118,9 +84,3 @@ jobs:
         name: opengauss-exporter-arm64
         path: opengauss-exporter-arm64.tar
         compression-level: 0
-
-    - name: Upload binary (optional)
-      uses: actions/upload-artifact@v4
-      with:
-        name: opengauss-exporter-arm64-binary
-        path: ./openGauss-exporter/openGauss-exporter
