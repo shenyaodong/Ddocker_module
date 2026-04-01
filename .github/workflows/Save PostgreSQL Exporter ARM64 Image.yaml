@@ -11,6 +11,11 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
@@ -27,25 +32,26 @@ jobs:
     - name: Build ARM64 binary
       working-directory: ./postgres_exporter
       run: |
-        # 使用官方 Makefile 构建 ARM64 二进制
-        make build
-        # 或者直接使用 go build
-        # CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o postgres_exporter cmd/postgres_exporter/main.go
+        # 直接使用 go build 构建 ARM64 二进制
+        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+          -ldflags="-s -w" \
+          -o postgres_exporter \
+          cmd/postgres_exporter/main.go
+        echo "=== Binary info ==="
         file postgres_exporter
         ls -lh postgres_exporter
 
-    - name: Create Dockerfile for ARM64
+    - name: Create Dockerfile
       working-directory: ./postgres_exporter
       run: |
-        cat > Dockerfile.arm64 << 'EOF'
-        FROM arm64v8/alpine:3.19
+        cat > Dockerfile << 'EOF'
+        FROM alpine:3.19
         
         RUN apk add --no-cache ca-certificates tzdata
         
         WORKDIR /app
         
         COPY postgres_exporter /app/postgres_exporter
-        COPY queries.yaml /app/queries.yaml
         
         RUN chmod +x /app/postgres_exporter
         
@@ -55,98 +61,6 @@ jobs:
         CMD ["--web.listen-address=:9187"]
         EOF
 
-    - name: Create default queries.yaml
-      working-directory: ./postgres_exporter
-      run: |
-        cat > queries.yaml << 'EOF'
-        pg_stat_database:
-          query: "SELECT datname, numbackends, xact_commit, xact_rollback, blks_read, blks_hit, tup_returned, tup_fetched, tup_inserted, tup_updated, tup_deleted, conflicts, temp_files, temp_bytes, deadlocks FROM pg_stat_database WHERE datname NOT IN ('template0', 'template1')"
-          metrics:
-            - datname:
-                usage: "LABEL"
-                description: "Database name"
-            - numbackends:
-                usage: "GAUGE"
-                description: "Number of backends currently connected to this database"
-            - xact_commit:
-                usage: "COUNTER"
-                description: "Number of transactions in this database that have been committed"
-            - xact_rollback:
-                usage: "COUNTER"
-                description: "Number of transactions in this database that have been rolled back"
-            - blks_read:
-                usage: "COUNTER"
-                description: "Number of disk blocks read in this database"
-            - blks_hit:
-                usage: "COUNTER"
-                description: "Number of times disk blocks were found already in the buffer cache"
-            - tup_returned:
-                usage: "COUNTER"
-                description: "Number of rows returned by queries in this database"
-            - tup_fetched:
-                usage: "COUNTER"
-                description: "Number of rows fetched by queries in this database"
-            - tup_inserted:
-                usage: "COUNTER"
-                description: "Number of rows inserted by queries in this database"
-            - tup_updated:
-                usage: "COUNTER"
-                description: "Number of rows updated by queries in this database"
-            - tup_deleted:
-                usage: "COUNTER"
-                description: "Number of rows deleted by queries in this database"
-            - conflicts:
-                usage: "COUNTER"
-                description: "Number of conflicts in this database"
-            - temp_files:
-                usage: "COUNTER"
-                description: "Number of temporary files created by queries in this database"
-            - temp_bytes:
-                usage: "COUNTER"
-                description: "Total amount of data written to temporary files by queries in this database"
-            - deadlocks:
-                usage: "COUNTER"
-                description: "Number of deadlocks detected in this database"
-        
-        pg_stat_bgwriter:
-          query: "SELECT checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_clean, maxwritten_clean, buffers_backend, buffers_backend_fsync, buffers_alloc FROM pg_stat_bgwriter"
-          metrics:
-            - checkpoints_timed:
-                usage: "COUNTER"
-                description: "Number of scheduled checkpoints that have been performed"
-            - checkpoints_req:
-                usage: "COUNTER"
-                description: "Number of requested checkpoints that have been performed"
-            - buffers_checkpoint:
-                usage: "COUNTER"
-                description: "Number of buffers written during checkpoints"
-            - buffers_clean:
-                usage: "COUNTER"
-                description: "Number of buffers written by the background writer"
-            - maxwritten_clean:
-                usage: "COUNTER"
-                description: "Number of times the background writer stopped a cleaning scan because it had written too many buffers"
-            - buffers_backend:
-                usage: "COUNTER"
-                description: "Number of buffers written directly by a backend"
-            - buffers_backend_fsync:
-                usage: "COUNTER"
-                description: "Number of times a backend had to execute its own fsync call"
-            - buffers_alloc:
-                usage: "COUNTER"
-                description: "Number of buffers allocated"
-        
-        pg_stat_activity:
-          query: "SELECT state, count(*) as count FROM pg_stat_activity WHERE datname NOT IN ('template0', 'template1') GROUP BY state"
-          metrics:
-            - state:
-                usage: "LABEL"
-                description: "Connection state"
-            - count:
-                usage: "GAUGE"
-                description: "Number of connections in this state"
-        EOF
-
     - name: Build ARM64 Docker image
       run: |
         cd postgres_exporter
@@ -154,7 +68,7 @@ jobs:
           --platform linux/arm64 \
           --load \
           -t postgres-exporter:arm64 \
-          -f Dockerfile.arm64 \
+          -f Dockerfile \
           .
         docker images | grep postgres-exporter
 
@@ -169,15 +83,3 @@ jobs:
         name: postgres-exporter-arm64
         path: postgres-exporter-arm64.tar
         compression-level: 0
-
-    - name: Upload binary artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: postgres-exporter-arm64-binary
-        path: ./postgres_exporter/postgres_exporter
-
-    - name: Upload queries.yaml
-      uses: actions/upload-artifact@v4
-      with:
-        name: postgres-exporter-queries
-        path: ./postgres_exporter/queries.yaml
