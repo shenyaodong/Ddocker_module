@@ -1,7 +1,13 @@
-name: Build Cloudeye Exporter ARM64 (Metric Supported)
+name: Build Cloudeye Exporter (ARM64, metric enabled)
 
 on:
   workflow_dispatch:
+
+env:
+  IMAGE_NAME: cloudeye-exporter
+  IMAGE_TAG: metric-arm64
+  REGISTRY: swr.cgo-e-01.xclouda.xfusion.com
+  NAMESPACE: erp-image-ver
 
 jobs:
   build:
@@ -9,7 +15,7 @@ jobs:
 
     steps:
     # =====================================================
-    # 1. Clone cloudeye-exporter (official repo, main branch)
+    # 1. Clone official cloudeye-exporter
     # =====================================================
     - name: Clone cloudeye-exporter source
       run: |
@@ -19,26 +25,26 @@ jobs:
         git log -1 --oneline
 
     # =====================================================
-    # 2. Verify metric flag support (FAIL FAST)
+    # 2. Patch logger panic (critical fix)
     # =====================================================
-    - name: Verify -metric flag support
+    - name: Patch logger nil panic
+      working-directory: ./cloudeye-exporter
+      run: |
+        set -e
+        sed -i 's/panic("logger is nil")/fmt.Printf("[ERROR] "+format+"\\n", v...); return/' logs/logs.go
+        grep -n "fmt.Printf" logs/logs.go
+
+    # =====================================================
+    # 3. Verify metric flag support (fail fast)
+    # =====================================================
+    - name: Verify -metric flag exists
       working-directory: ./cloudeye-exporter
       run: |
         if ! grep -R "flag.*metric" -n main.go; then
-          echo "ERROR: This version does NOT support -metric flag"
+          echo "ERROR: -metric flag not found in source code"
           exit 1
         fi
-        echo "OK: -metric flag supported"
-
-    # =====================================================
-    # 3. Patch logger panic bug (nil guard)
-    # =====================================================
-    - name: Patch logger panic bug
-      working-directory: ./cloudeye-exporter
-      run: |
-        sed -i 's/logger.Errorf(/if logger != nil { logger.Errorf(/g' logs/logs.go
-        sed -i 's/)$)/) }/g' logs/logs.go || true
-        echo "Logger panic guard patched"
+        echo "OK: -metric flag found"
 
     # =====================================================
     # 4. Setup Go
@@ -61,7 +67,15 @@ jobs:
         file cloudeye-exporter
 
     # =====================================================
-    # 6. Create Dockerfile
+    # 6. Validate binary supports -metric (runtime check)
+    # =====================================================
+    - name: Validate -metric flag at runtime
+      working-directory: ./cloudeye-exporter
+      run: |
+        ./cloudeye-exporter -h | grep -- "-metric"
+
+    # =====================================================
+    # 7. Create Dockerfile
     # =====================================================
     - name: Create Dockerfile
       working-directory: ./cloudeye-exporter
@@ -76,41 +90,35 @@ jobs:
         EOF
 
     # =====================================================
-    # 7. Setup QEMU
+    # 8. Setup QEMU
     # =====================================================
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
     # =====================================================
-    # 8. Setup Docker Buildx
+    # 9. Setup Docker Buildx
     # =====================================================
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
     # =====================================================
-    # 9. Build ARM64 image
+    # 10. Login to SWR
     # =====================================================
-    - name: Build ARM64 image
+    - name: Login to SWR
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ secrets.SWR_USERNAME }}
+        password: ${{ secrets.SWR_PASSWORD }}
+
+    # =====================================================
+    # 11. Build & Push ARM64 image
+    # =====================================================
+    - name: Build and push image
       run: |
         docker buildx build \
           --platform linux/arm64 \
-          -t cloudeye-exporter:new-arm64 \
-          --load \
+          -t $REGISTRY/$NAMESPACE/$IMAGE_NAME:$IMAGE_TAG \
+          --push \
           ./cloudeye-exporter
 
-    # =====================================================
-    # 10. Save image as tar
-    # =====================================================
-    - name: Save image as tar
-      run: |
-        docker save cloudeye-exporter:new-arm64 -o cloudeye-exporter-new-arm64.tar
-
-    # =====================================================
-    # 11. Upload image artifact
-    # =====================================================
-    - name: Upload image artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: cloudeye-exporter-new-arm64
-        path: cloudeye-exporter-new-arm64.tar
-        compression-level: 0
