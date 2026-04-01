@@ -9,28 +9,17 @@ jobs:
     
     steps:
     # ============================================
-    # 1. 检出 CES Exporter 源码
+    # 1. 克隆 CES Exporter 源码（使用 git clone）
     # ============================================
-    - name: Checkout CES Exporter source
-      uses: actions/checkout@v4
-      with:
-        repository: huaweicloud/cloudeye-exporter
-        path: cloudeye-exporter
-        ref: main
-    
-    # ============================================
-    # 2. 验证仓库是否成功检出
-    # ============================================
-    - name: Verify checkout
+    - name: Clone CES Exporter source
       run: |
-        ls -la cloudeye-exporter/
-        if [ ! -f "cloudeye-exporter/go.mod" ]; then
-          echo "Error: go.mod not found"
-          exit 1
-        fi
+        git clone --depth 1 --branch main https://github.com/huaweicloud/cloudeye-exporter.git cloudeye-exporter
+        cd cloudeye-exporter
+        git log -1 --oneline
+        ls -la
     
     # ============================================
-    # 3. 设置 Go 环境
+    # 2. 设置 Go 环境
     # ============================================
     - name: Set up Go
       uses: actions/setup-go@v5
@@ -38,7 +27,7 @@ jobs:
         go-version: '1.21'
     
     # ============================================
-    # 4. 编译 ARM64 二进制
+    # 3. 编译 ARM64 二进制
     # ============================================
     - name: Build ARM64 binary
       working-directory: ./cloudeye-exporter
@@ -48,7 +37,7 @@ jobs:
         file cloudeye-exporter
     
     # ============================================
-    # 5. 创建配置文件
+    # 4. 创建配置文件
     # ============================================
     - name: Create config files
       working-directory: ./cloudeye-exporter
@@ -79,7 +68,7 @@ jobs:
         EOF
     
     # ============================================
-    # 6. 创建 Dockerfile（ARM64 专用）
+    # 5. 创建 Dockerfile（ARM64 专用）
     # ============================================
     - name: Create Dockerfile
       working-directory: ./cloudeye-exporter
@@ -104,19 +93,19 @@ jobs:
         EOF
     
     # ============================================
-    # 7. 设置 QEMU
+    # 6. 设置 QEMU
     # ============================================
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
     
     # ============================================
-    # 8. 设置 Docker Buildx
+    # 7. 设置 Docker Buildx
     # ============================================
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
     
     # ============================================
-    # 9. 构建 ARM64 镜像
+    # 8. 构建 ARM64 镜像
     # ============================================
     - name: Build ARM64 image
       run: |
@@ -127,7 +116,7 @@ jobs:
           ./cloudeye-exporter
     
     # ============================================
-    # 10. 导出镜像为 tar 文件
+    # 9. 导出镜像为 tar 文件
     # ============================================
     - name: Save image as tar
       run: |
@@ -135,7 +124,7 @@ jobs:
         ls -lh cloudeye-exporter-arm64.tar
     
     # ============================================
-    # 11. 上传 tar 文件作为 Artifact
+    # 10. 上传 tar 文件作为 Artifact
     # ============================================
     - name: Upload artifact
       uses: actions/upload-artifact@v4
@@ -145,7 +134,7 @@ jobs:
         compression-level: 0
     
     # ============================================
-    # 12. 上传二进制文件
+    # 11. 上传二进制文件
     # ============================================
     - name: Upload binary artifact
       uses: actions/upload-artifact@v4
