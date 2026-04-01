@@ -9,13 +9,17 @@ jobs:
     
     steps:
     # ============================================
-    # 1. 克隆 CES Exporter 源码（使用 git clone）
+    # 1. 克隆 CES Exporter 源码（使用默认分支）
     # ============================================
     - name: Clone CES Exporter source
       run: |
-        git clone --depth 1 --branch main https://github.com/huaweicloud/cloudeye-exporter.git cloudeye-exporter
+        git clone --depth 1 https://github.com/huaweicloud/cloudeye-exporter.git cloudeye-exporter
         cd cloudeye-exporter
+        echo "=== Repository info ==="
+        git branch -a
+        echo "=== Latest commit ==="
         git log -1 --oneline
+        echo "=== Files ==="
         ls -la
     
     # ============================================
