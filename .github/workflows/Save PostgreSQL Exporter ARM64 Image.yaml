@@ -32,12 +32,10 @@ jobs:
     - name: Build ARM64 binary
       working-directory: ./postgres_exporter
       run: |
-        # 直接使用 go build 构建 ARM64 二进制
-        CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
-          -ldflags="-s -w" \
-          -o postgres_exporter \
-          cmd/postgres_exporter/main.go
-        echo "=== Binary info ==="
+        # 使用官方 Makefile 但指定架构
+        make build GOOS=linux GOARCH=arm64 CGO_ENABLED=0
+        # 如果上面不行，使用 go build 包含所有文件
+        # CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o postgres_exporter .
         file postgres_exporter
         ls -lh postgres_exporter
 
