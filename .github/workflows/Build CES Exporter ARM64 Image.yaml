@@ -1,4 +1,4 @@
-name: Build Cloudeye Exporter (ARM64, metric enabled)
+name: Build Cloudeye Exporter (ARM64, metric enabled, tar only)
 
 on:
   workflow_dispatch:
@@ -6,8 +6,6 @@ on:
 env:
   IMAGE_NAME: cloudeye-exporter
   IMAGE_TAG: metric-arm64
-  REGISTRY: swr.cgo-e-01.xclouda.xfusion.com
-  NAMESPACE: erp-image-ver
 
 jobs:
   build:
@@ -21,11 +19,10 @@ jobs:
       run: |
         git clone https://github.com/huaweicloud/cloudeye-exporter.git
         cd cloudeye-exporter
-        echo "Current commit:"
         git log -1 --oneline
 
     # =====================================================
-    # 2. Patch logger panic (critical fix)
+    # 2. Patch logger nil panic (critical fix)
     # =====================================================
     - name: Patch logger nil panic
       working-directory: ./cloudeye-exporter
@@ -35,7 +32,7 @@ jobs:
         grep -n "fmt.Printf" logs/logs.go
 
     # =====================================================
-    # 3. Verify metric flag support (fail fast)
+    # 3. Verify -metric flag exists in source (compile-time)
     # =====================================================
     - name: Verify -metric flag exists
       working-directory: ./cloudeye-exporter
@@ -44,7 +41,7 @@ jobs:
           echo "ERROR: -metric flag not found in source code"
           exit 1
         fi
-        echo "OK: -metric flag found"
+        echo "OK: -metric flag found in source"
 
     # =====================================================
     # 4. Setup Go
@@ -67,15 +64,7 @@ jobs:
         file cloudeye-exporter
 
     # =====================================================
-    # 6. Validate binary supports -metric (runtime check)
-    # =====================================================
-    - name: Validate -metric flag at runtime
-      working-directory: ./cloudeye-exporter
-      run: |
-        ./cloudeye-exporter -h | grep -- "-metric"
-
-    # =====================================================
-    # 7. Create Dockerfile
+    # 6. Create Dockerfile
     # =====================================================
     - name: Create Dockerfile
       working-directory: ./cloudeye-exporter
@@ -90,35 +79,52 @@ jobs:
         EOF
 
     # =====================================================
-    # 8. Setup QEMU
+    # 7. Setup QEMU (for ARM64 container run)
     # =====================================================
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 
     # =====================================================
-    # 9. Setup Docker Buildx
+    # 8. Setup Docker Buildx
     # =====================================================
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
     # =====================================================
-    # 10. Login to SWR
+    # 9. Build ARM64 image locally
     # =====================================================
-    - name: Login to SWR
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ secrets.SWR_USERNAME }}
-        password: ${{ secrets.SWR_PASSWORD }}
-
-    # =====================================================
-    # 11. Build & Push ARM64 image
-    # =====================================================
-    - name: Build and push image
+    - name: Build ARM64 image (local)
       run: |
         docker buildx build \
           --platform linux/arm64 \
-          -t $REGISTRY/$NAMESPACE/$IMAGE_NAME:$IMAGE_TAG \
-          --push \
+          -t $IMAGE_NAME:$IMAGE_TAG \
+          --load \
           ./cloudeye-exporter
 
+    # =====================================================
+    # 10. Runtime verify -metric inside ARM64 container ✅
+    # =====================================================
+    - name: Verify -metric flag inside container
+      run: |
+        docker run --rm --platform linux/arm64 \
+          $IMAGE_NAME:$IMAGE_TAG \
+          -h | grep -- "-metric"
+
+    # =====================================================
+    # 11. Save image to tar
+    # =====================================================
+    - name: Save image to tar
+      run: |
+        docker save $IMAGE_NAME:$IMAGE_TAG \
+          -o cloudeye-exporter-metric-arm64.tar
+        ls -lh cloudeye-exporter-metric-arm64.tar
+
+    # =====================================================
+    # 12. Upload tar as artifact
+    # =====================================================
+    - name: Upload image tar artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cloudeye-exporter-metric-arm64
+        path: cloudeye-exporter-metric-arm64.tar
+        compression-level: 0
