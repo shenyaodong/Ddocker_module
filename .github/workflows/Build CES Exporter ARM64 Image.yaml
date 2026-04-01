@@ -41,123 +41,106 @@ jobs:
           echo "Current commit:"
           git log -1 --oneline
 
-      - name: Debug - Show file structure
+      - name: Inspect logs package
         working-directory: ./cloudeye-exporter
         run: |
-          echo "=== Files in logs directory ==="
+          echo "=== logs directory content ==="
           ls -la logs/
           echo ""
-          echo "=== First 30 lines of logs/logs.go ==="
-          head -30 logs/logs.go
+          echo "=== logs/logs.go content ==="
+          cat logs/logs.go
           echo ""
-          echo "=== Search for Errorf ==="
-          grep -n "Errorf" logs/logs.go || echo "No Errorf found"
+          echo "=== Search for Init function ==="
+          grep -n "func.*Init" logs/*.go || echo "No Init function found"
 
-      - name: Patch logs.go with Python
+      - name: Patch logs.go - add nil check and Init function
         working-directory: ./cloudeye-exporter
         run: |
           python3 << 'PYTHON_PATCH'
           import re
-          import sys
           
-          try:
-              with open('logs/logs.go', 'r') as f:
-                  content = f.read()
-              
-              # 检查是否已经有补丁
-              if 'if lc == nil || lc.logger == nil' in content:
-                  print("Patch already applied to logs.go, skipping")
-                  sys.exit(0)
-              
-              # 查找 Errorf 函数 - 使用更宽松的正则
+          # 读取 logs.go
+          with open('logs/logs.go', 'r') as f:
+              content = f.read()
+          
+          # 1. 修复 Errorf 函数
+          if 'if lc == nil || lc.logger == nil' not in content:
               pattern = r'(func\s+\(lc\s+\*LoggerConstructor\)\s+Errorf\s*\([^)]+\)\s*\{)\s*\n'
+              def add_check(m):
+                  return m.group(1) + '\n    if lc == nil || lc.logger == nil {\n        fmt.Printf("[ERROR] "+format+"\\n", v...)\n        return\n    }\n'
+              content = re.sub(pattern, add_check, content, flags=re.MULTILINE)
+          
+          # 2. 添加 InitLogger 函数（如果不存在）
+          if 'func InitLogger()' not in content:
+              init_func = '''
+          // InitLogger initializes the global logger
+          func InitLogger() error {
+              if logger == nil {
+                  logger = &LoggerConstructor{}
+                  // Initialize with default config
+                  logger.logger, _ = zap.NewProduction()
+              }
+              return nil
+          }
+          '''
+              # 在文件末尾添加
+              content = content.rstrip() + '\n' + init_func
+          
+          # 3. 确保导入了 fmt 和 go.uber.org/zap
+          imports_to_add = []
+          if 'import (' in content:
+              if '"fmt"' not in content:
+                  imports_to_add.append('"fmt"')
+              if '"go.uber.org/zap"' not in content:
+                  imports_to_add.append('"go.uber.org/zap"')
               
-              def add_check(match):
-                  func_start = match.group(1)
-                  return func_start + '\n    if lc == nil || lc.logger == nil {\n        fmt.Printf("[ERROR] "+format+"\\n", v...)\n        return\n    }\n'
-              
-              new_content = re.sub(pattern, add_check, content, flags=re.MULTILINE)
-              
-              if new_content == content:
-                  print("Warning: Could not find Errorf function to patch")
-                  sys.exit(0)
-              
-              # 确保导入了 fmt 包
-              if 'import (' in new_content and '"fmt"' not in new_content:
-                  new_content = new_content.replace('import (', 'import (\n\t"fmt"')
-              
-              with open('logs/logs.go', 'w') as f:
-                  f.write(new_content)
-              
-              print("Successfully patched logs.go")
-              
-          except Exception as e:
-              print(f"Error patching logs.go: {e}")
-              sys.exit(1)
+              if imports_to_add:
+                  for imp in imports_to_add:
+                      content = content.replace('import (', 'import (\n\t' + imp)
+          
+          with open('logs/logs.go', 'w') as f:
+              f.write(content)
+          
+          print("Patched logs.go")
           PYTHON_PATCH
 
-      - name: Patch main.go with Python
+      - name: Patch main.go - fix init order
         working-directory: ./cloudeye-exporter
         run: |
           python3 << 'PYTHON_PATCH'
           import re
-          import sys
           
-          try:
-              with open('main.go', 'r') as f:
-                  content = f.read()
-              
-              # 检查是否已经有补丁
-              if 'logs.InitLogger()' in content:
-                  print("Patch already applied to main.go, skipping")
-                  sys.exit(0)
-              
-              # 查找 initConf 函数并添加日志初始化
-              pattern = r'(func\s+initConf\s*\(\)\s*\{)\s*\n'
-              
-              def add_init(match):
-                  func_start = match.group(1)
-                  return func_start + '\n    // Ensure logger is initialized\n    if err := logs.InitLogger(); err != nil {\n        fmt.Printf("FATAL: failed to init logger: %v\\n", err)\n        return\n    }\n'
-              
-              new_content = re.sub(pattern, add_init, content, flags=re.MULTILINE)
-              
-              if new_content == content:
-                  print("Warning: Could not find initConf function to patch")
-                  sys.exit(0)
-              
-              # 确保导入了 fmt 包
-              if 'import (' in new_content and '"fmt"' not in new_content:
-                  new_content = new_content.replace('import (', 'import (\n\t"fmt"')
-              
-              with open('main.go', 'w') as f:
-                  f.write(new_content)
-              
-              print("Successfully patched main.go")
-              
-          except Exception as e:
-              print(f"Error patching main.go: {e}")
-              sys.exit(1)
+          with open('main.go', 'r') as f:
+              content = f.read()
+          
+          # 在 initConf 函数开头添加日志初始化
+          pattern = r'(func\s+initConf\s*\(\)\s*\{)\s*\n'
+          
+          def add_init(m):
+              return m.group(1) + '\n    // Ensure logger is initialized\n    if err := logs.InitLogger(); err != nil {\n        fmt.Printf("FATAL: failed to init logger: %v\\n", err)\n        return\n    }\n'
+          
+          content = re.sub(pattern, add_init, content, flags=re.MULTILINE)
+          
+          # 确保导入了 fmt 包
+          if 'import (' in content and '"fmt"' not in content:
+              content = content.replace('import (', 'import (\n\t"fmt"')
+          
+          with open('main.go', 'w') as f:
+              f.write(content)
+          
+          print("Patched main.go")
           PYTHON_PATCH
 
       - name: Verify patches
         working-directory: ./cloudeye-exporter
         run: |
-          echo "=== Checking logs.go patch ==="
-          if grep -q "if lc == nil || lc.logger == nil" logs/logs.go; then
-            echo "✓ logs.go patched successfully"
-            grep -A5 "func.*Errorf" logs/logs.go | head -10
-          else
-            echo "⚠ logs.go patch not found, but continuing"
-          fi
+          echo "=== logs.go patch verification ==="
+          grep -n "if lc == nil || lc.logger == nil" logs/logs.go && echo "✓ Errorf nil check added" || echo "⚠ Errorf nil check not found"
+          grep -n "func InitLogger()" logs/logs.go && echo "✓ InitLogger function added" || echo "⚠ InitLogger function not found"
           
           echo ""
-          echo "=== Checking main.go patch ==="
-          if grep -q "logs.InitLogger()" main.go; then
-            echo "✓ main.go patched successfully"
-            grep -A5 "func initConf" main.go | head -10
-          else
-            echo "⚠ main.go patch not found, but continuing"
-          fi
+          echo "=== main.go patch verification ==="
+          grep -n "logs.InitLogger()" main.go && echo "✓ InitLogger call added" || echo "⚠ InitLogger call not found"
 
       - name: Setup Go
         uses: actions/setup-go@v5
