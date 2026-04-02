@@ -1,4 +1,4 @@
-name: Build CES Exporter
+name: Build CES Exporter ARM64
 
 on:
   workflow_dispatch:
@@ -7,61 +7,39 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Clone source
         run: |
           git clone https://github.com/huaweicloud/cloudeye-exporter.git
           cd cloudeye-exporter
           git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 
-      - name: Fix nil pointer
-        working-directory: ./cloudeye-exporter
+      - name: Apply nil pointer fix
         run: |
-          # 直接替换函数内容
-          cat > /tmp/fix.sh << 'SCRIPT'
-#!/bin/bash
-cd logs
-cp logs.go logs.go.bak
-# 用 awk 修复，避免 sed 复杂语法
-awk '
-/^func \(lc \*LoggerConstructor\) Errorf/ { print; print "    if lc == nil || lc.logger == nil {"; print "        fmt.Printf(\"[ERROR] \"+format+\"\\\\n\", v...)"; print "        return"; print "    }"; next }
-/^func \(lc \*LoggerConstructor\) Warnf/ { print; print "    if lc == nil || lc.logger == nil {"; print "        fmt.Printf(\"[WARN] \"+format+\"\\\\n\", v...)"; print "        return"; print "    }"; next }
-/^func \(lc \*LoggerConstructor\) Infof/ { print; print "    if lc == nil || lc.logger == nil {"; print "        fmt.Printf(\"[INFO] \"+format+\"\\\\n\", v...)"; print "        return"; print "    }"; next }
-{ print }
-' logs.go > logs.go.new
-mv logs.go.new logs.go
-SCRIPT
-          chmod +x /tmp/fix.sh
-          /tmp/fix.sh
-          
-          # 确保 fmt 包已导入
-          if ! grep -q '"fmt"' logs.go; then
-            sed -i '1i package logs\n\nimport "fmt"\n' logs.go
-          fi
-          
-          echo "Fix applied"
+          chmod +x fix-nil-pointer.sh
+          ./fix-nil-pointer.sh
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
 
-      - name: Build
+      - name: Build binary
         working-directory: ./cloudeye-exporter
         run: |
           go mod download
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o cloudeye-exporter main.go
 
-      - name: Package
+      - name: Package image
         working-directory: ./cloudeye-exporter
         run: |
-          echo "FROM alpine:3.19
-COPY cloudeye-exporter /usr/local/bin/
-EXPOSE 8080
-ENTRYPOINT [\"/usr/local/bin/cloudeye-exporter\"]" > Dockerfile
+          echo "FROM alpine:3.19" > Dockerfile
+          echo "COPY cloudeye-exporter /usr/local/bin/" >> Dockerfile
+          echo "EXPOSE 8080" >> Dockerfile
+          echo "ENTRYPOINT [\"/usr/local/bin/cloudeye-exporter\"]" >> Dockerfile
           docker build -t ces-exporter:arm64 .
           docker save ces-exporter:arm64 | gzip > ces-exporter-arm64.tar.gz
 
-      - name: Upload
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ces-exporter-arm64
