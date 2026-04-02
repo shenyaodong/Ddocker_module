@@ -39,42 +39,47 @@ jobs:
             TAG_VERSION=${TAG_VERSION#v}
             git checkout tags/v${TAG_VERSION} -b build-version
           fi
-
-      - name: Download official release package (for config files)
-        run: |
-          # 获取版本号（去掉可能存在的 v 前缀）
-          VERSION="${{ github.event.inputs.exporter_version }}"
-          VERSION=${VERSION#v}
-          
-          # 使用正确的 URL 格式（带点号，不是短横线）
-          RELEASE_URL="https://github.com/huaweicloud/cloudeye-exporter/releases/download/v${VERSION}/cloudeye-exporter.v${VERSION}.tar.gz"
-          
-          echo "下载配置文件包: $RELEASE_URL"
-          wget $RELEASE_URL -O cloudeye-exporter-release.tar.gz
-          tar -xzvf cloudeye-exporter-release.tar.gz
-          
-          echo "解压后的文件列表："
+          echo "源码目录内容："
           ls -la
 
-      - name: Prepare config files directory
+      - name: Prepare config files from source code
         run: |
           # 创建配置文件目录
           mkdir -p config-files
           
-          # 从解压的 Release 包中复制配置文件
-          # 解压后的目录名通常是 cloudeye-exporter
-          if [ -d "cloudeye-exporter" ]; then
-            cp cloudeye-exporter/*.yml config-files/ 2>/dev/null || true
-            cp cloudeye-exporter/*.json config-files/ 2>/dev/null || true
-          else
-            # 如果上述路径不对，尝试查找
-            find . -name "*.yml" -exec cp {} config-files/ \;
-            find . -name "*.json" -exec cp {} config-files/ \;
-          fi
+          # 配置文件就在源码根目录下，直接复制
+          echo "从源码复制配置文件..."
+          cp cloudeye-exporter-source/clouds.yml config-files/ 2>/dev/null || true
+          cp cloudeye-exporter-source/endpoints.yml config-files/ 2>/dev/null || true
+          cp cloudeye-exporter-source/metric.yml config-files/ 2>/dev/null || true
+          cp cloudeye-exporter-source/logs.yml config-files/ 2>/dev/null || true
+          cp cloudeye-exporter-source/*.json config-files/ 2>/dev/null || true
           
-          # 列出复制的文件
           echo "已复制的配置文件："
           ls -la config-files/
+          
+          # 验证关键配置文件是否存在
+          if [ ! -f config-files/clouds.yml ]; then
+            echo "警告：在源码中未找到 clouds.yml 配置文件"
+            echo "源码目录完整内容："
+            ls -la cloudeye-exporter-source/
+            echo "将创建默认 clouds.yml 配置"
+            
+            # 创建默认配置
+            cat > config-files/clouds.yml << 'EOFCONFIG'
+global:
+  port: ":8087"
+  scrape_batch_size: 300
+  resource_sync_interval_minutes: 180
+  ignore_ssl_verify: false
+auth:
+  auth_url: "https://iam.{region_id}.myhuaweicloud.com/v3"
+  project_name: "cn-north-1"
+  region: "cn-north-1"
+  access_key: ""
+  secret_key: ""
+EOFCONFIG
+          fi
 
       - name: Create Dockerfile with COPY instructions
         run: |
@@ -109,12 +114,12 @@ jobs:
           COPY --from=builder /build/cloudeye-exporter /exporter/
 
           # ============================================
-          # 使用 COPY 复制配置文件到镜像
+          # 从源码复制配置文件到镜像
           # ============================================
           COPY config-files/clouds.yml /exporter/
-          COPY config-files/endpoints.yml /exporter/
-          COPY config-files/metric.yml /exporter/
-          COPY config-files/logs.yml /exporter/
+          COPY config-files/endpoints.yml /exporter/ 2>/dev/null || true
+          COPY config-files/metric.yml /exporter/ 2>/dev/null || true
+          COPY config-files/logs.yml /exporter/ 2>/dev/null || true
           # 复制 JSON 配置文件（如果存在）
           COPY config-files/*.json /exporter/ 2>/dev/null || true
 
@@ -139,6 +144,7 @@ jobs:
       - name: Verify image architecture and files
         run: |
           # 检查架构
+          echo "镜像架构："
           docker inspect ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} | grep Architecture
           
           # 检查镜像内的配置文件
@@ -150,6 +156,9 @@ jobs:
           docker save ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -o ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
           gzip ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
           sha256sum ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz > ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz.sha256
+          
+          echo "生成的文件："
+          ls -lh *.tar.gz*
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -159,6 +168,7 @@ jobs:
             ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz
             ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz.sha256
           retention-days: 7
+          compression-level: 0
 
       - name: Upload to release (optional)
         if: startsWith(github.ref, 'refs/tags/')
