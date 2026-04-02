@@ -11,7 +11,6 @@ jobs:
         run: |
           git clone https://github.com/huaweicloud/cloudeye-exporter.git
           cd cloudeye-exporter
-          # 获取最新稳定版本
           LATEST_TAG=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           git checkout $LATEST_TAG
           echo "Building version: $LATEST_TAG"
@@ -19,43 +18,29 @@ jobs:
       - name: Fix nil pointer bug
         working-directory: ./cloudeye-exporter
         run: |
-          # 在 logs.go 开头添加 fmt 导入（如果还没有）
+          # 添加 fmt 导入
           if ! grep -q '"fmt"' logs/logs.go; then
             sed -i '1i package logs\n\nimport "fmt"\n' logs/logs.go
           fi
           
-          # 修复 Errorf 函数
-          cat > /tmp/fix.py << 'PYTHON'
+          # 使用 Python 修复，注意转义
+          python3 << 'PYTHON_SCRIPT'
 import re
-import sys
-
 with open('logs/logs.go', 'r') as f:
     content = f.read()
 
-# 定义需要修复的函数
 functions = ['Errorf', 'Warnf', 'Infof', 'Debugf']
-
 for func in functions:
-    # 查找函数定义
-    pattern = rf'(func \(lc \*LoggerConstructor\) {func}\(format string, v \.\.\.interface{{}}\) \{{)'
-    
-    def replace_func(match):
-        return match.group(1) + '''
-        if lc == nil || lc.logger == nil {
-                fmt.Printf("[' + func.upper() + '] "+format+"\\n", v...)
-                return
-        }'''
-    
-    content = re.sub(pattern, replace_func, content, flags=re.DOTALL)
+    pattern = r'(func \(lc \*LoggerConstructor\) ' + func + r'\(format string, v \.\.\.interface{}\) \{)'
+    replacement = r'\1\n\tif lc == nil || lc.logger == nil {\n\t\tfmt.Printf("[' + func.upper() + r'] "+format+"\\n", v...)\n\t\treturn\n\t}'
+    content = re.sub(pattern, replacement, content)
 
 with open('logs/logs.go', 'w') as f:
     f.write(content)
-print("✅ Fixed logs.go")
-PYTHON
-          python3 /tmp/fix.py
+print("Fixed logs.go")
+PYTHON_SCRIPT
           
-          # 验证修复结果
-          echo "=== Verification ==="
+          echo "Verification:"
           grep -A 6 "func (lc \*LoggerConstructor) Errorf" logs/logs.go | head -8
 
       - name: Setup Go
@@ -79,14 +64,13 @@ PYTHON
       - name: Create Dockerfile
         working-directory: ./cloudeye-exporter
         run: |
-          cat > Dockerfile << 'DOCKEREOF'
+          cat > Dockerfile << 'EOF'
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
 COPY cloudeye-exporter /usr/local/bin/
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/cloudeye-exporter"]
-DOCKEREOF
-          cat Dockerfile
+EOF
 
       - name: Build Docker image
         working-directory: ./cloudeye-exporter
@@ -111,13 +95,6 @@ DOCKEREOF
       - name: Show success message
         run: |
           echo "=========================================="
-          echo "✅ Build completed successfully!"
-          echo "=========================================="
-          echo ""
-          echo "📦 Download: ces-exporter-arm64.tar.gz from Artifacts"
-          echo ""
-          echo "📋 Usage:"
-          echo "  gunzip ces-exporter-arm64.tar.gz"
-          echo "  docker load -i ces-exporter-arm64.tar"
-          echo "  docker tag ces-exporter:arm64 your-registry/ces-exporter:latest"
+          echo "Build completed successfully!"
+          echo "Download: ces-exporter-arm64.tar.gz from Artifacts"
           echo "=========================================="
