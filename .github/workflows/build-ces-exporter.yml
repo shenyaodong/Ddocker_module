@@ -1,46 +1,23 @@
-name: Build CES Exporter ARM64
+name: Pull ARM64 Image
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  pull:
     runs-on: ubuntu-latest
     steps:
-      - name: Clone source
+      - name: Pull ARM64 image
         run: |
-          git clone https://github.com/huaweicloud/cloudeye-exporter.git
-          cd cloudeye-exporter
-          git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
+          docker pull --platform linux/arm64 telkomindonesia/hwc-cloudeye-exporter:latest
 
-      - name: Apply nil pointer fix
+      - name: Save image
         run: |
-          chmod +x fix-nil-pointer.sh
-          ./fix-nil-pointer.sh
+          docker save telkomindonesia/hwc-cloudeye-exporter:latest -o image.tar
+          gzip image.tar
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-
-      - name: Build binary
-        working-directory: ./cloudeye-exporter
-        run: |
-          go mod download
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o cloudeye-exporter main.go
-
-      - name: Package image
-        working-directory: ./cloudeye-exporter
-        run: |
-          echo "FROM alpine:3.19" > Dockerfile
-          echo "COPY cloudeye-exporter /usr/local/bin/" >> Dockerfile
-          echo "EXPOSE 8080" >> Dockerfile
-          echo "ENTRYPOINT [\"/usr/local/bin/cloudeye-exporter\"]" >> Dockerfile
-          docker build -t ces-exporter:arm64 .
-          docker save ces-exporter:arm64 | gzip > ces-exporter-arm64.tar.gz
-
-      - name: Upload artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: ces-exporter-arm64
-          path: ./cloudeye-exporter/ces-exporter-arm64.tar.gz
+          path: image.tar.gz
