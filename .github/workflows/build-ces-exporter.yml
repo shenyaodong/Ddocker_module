@@ -23,28 +23,20 @@ jobs:
             sed -i '1i package logs\n\nimport "fmt"\n' logs/logs.go
           fi
           
-          # 修复 Errorf
-          sed -i '/^func (lc \*LoggerConstructor) Errorf(/a \
-          if lc == nil || lc.logger == nil { \
-              fmt.Printf("[ERROR] "+format+"\\n", v...) \
-              return \
-          }' logs/logs.go
+          # 修复 Errorf - 使用分号分隔，避免反斜杠换行
+          sed -i '/^func (lc \*LoggerConstructor) Errorf(/a \    if lc == nil || lc.logger == nil { fmt.Printf("[ERROR] "+format+"\\n", v...); return }' logs/logs.go
           
           # 修复 Warnf
-          sed -i '/^func (lc \*LoggerConstructor) Warnf(/a \
-          if lc == nil || lc.logger == nil { \
-              fmt.Printf("[WARN] "+format+"\\n", v...) \
-              return \
-          }' logs/logs.go
+          sed -i '/^func (lc \*LoggerConstructor) Warnf(/a \    if lc == nil || lc.logger == nil { fmt.Printf("[WARN] "+format+"\\n", v...); return }' logs/logs.go
           
           # 修复 Infof
-          sed -i '/^func (lc \*LoggerConstructor) Infof(/a \
-          if lc == nil || lc.logger == nil { \
-              fmt.Printf("[INFO] "+format+"\\n", v...) \
-              return \
-          }' logs/logs.go
+          sed -i '/^func (lc \*LoggerConstructor) Infof(/a \    if lc == nil || lc.logger == nil { fmt.Printf("[INFO] "+format+"\\n", v...); return }' logs/logs.go
           
           echo "Fixed logs.go"
+          
+          # 验证修复结果
+          echo "=== Verification ==="
+          grep -A 3 "func (lc \*LoggerConstructor) Errorf" logs/logs.go | head -6 || true
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -79,7 +71,7 @@ EOF
         working-directory: ./cloudeye-exporter
         run: |
           docker build -t ces-exporter:arm64 .
-          docker images | grep ces-exporter
+          docker images | grep ces-exporter || true
 
       - name: Export image to tar
         working-directory: ./cloudeye-exporter
