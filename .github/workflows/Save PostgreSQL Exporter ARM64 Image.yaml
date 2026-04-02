@@ -13,15 +13,6 @@ on:
         required: true
         default: 'master'
         type: string
-      python_version:
-        description: 'Python版本'
-        required: true
-        default: '3.8'
-        type: choice
-        options:
-          - '3.8'
-          - '3.9'
-          - '3.10'
 
 env:
   IMAGE_NAME: opengauss-exporter
@@ -34,8 +25,7 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
-      with:
-        path: repo
+      # 注意：不要指定 path，让代码检出到根目录
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v2
@@ -44,19 +34,13 @@ jobs:
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
-      with:
-        driver-opts: |
-          image=moby/buildkit:latest
-          network=host
 
     - name: Validate DBMind branch
       run: |
         echo "=== 验证DBMind分支存在性 ==="
         BRANCH="${{ github.event.inputs.dbmind_branch }}"
         git ls-remote --heads https://gitee.com/opengauss/openGauss-DBMind.git ${BRANCH} | grep -q ${BRANCH} || {
-          echo "❌ 分支 ${BRANCH} 不存在于 openGauss-DBMind 仓库"
-          echo "可用的分支列表:"
-          git ls-remote --heads https://gitee.com/opengauss/openGauss-DBMind.git | awk '{print $2}' | sed 's|refs/heads/||' | head -10
+          echo "❌ 分支 ${BRANCH} 不存在"
           exit 1
         }
         echo "✅ 分支 ${BRANCH} 存在"
@@ -64,7 +48,8 @@ jobs:
     - name: Build openGauss-exporter for ARM64
       uses: docker/build-push-action@v4
       with:
-        context: repo
+        context: .                    # ← 使用当前目录（根目录）
+        file: ./Dockerfile            # ← 明确指定Dockerfile路径
         platforms: ${{ env.TARGET_ARCH }}
         tags: |
           ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}
@@ -76,64 +61,17 @@ jobs:
           DBMIND_BRANCH=${{ github.event.inputs.dbmind_branch }}
           EXPORTER_VERSION=${{ github.event.inputs.version }}
 
-    - name: Verify image
-      run: |
-        echo "=== 镜像验证 ==="
-        docker images | grep ${{ env.IMAGE_NAME }}
-        echo ""
-        echo "=== 架构验证 ==="
-        docker inspect ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} | jq -r '.[0].Architecture'
-        echo ""
-        echo "=== 测试启动 ==="
-        docker run --rm ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} --help 2>&1 | head -20 || true
-
     - name: Save image as tar
       run: |
         mkdir -p output
         OUTPUT_FILE="output/${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64.tar"
         docker save ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} -o ${OUTPUT_FILE}
         echo "文件: $(ls -lh output/)"
-        echo "文件大小: $(du -h ${OUTPUT_FILE} | cut -f1)"
-        sha256sum ${OUTPUT_FILE} > ${OUTPUT_FILE}.sha256
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64
-        path: output/*
+        path: output/*.tar
         retention-days: 30
         compression-level: 0
-
-    - name: Build summary
-      run: |
-        cat << EOF > $GITHUB_STEP_SUMMARY
-        ## 构建完成 ✅
-        
-        | 项目 | 值 |
-        |------|-----|
-        | 镜像名称 | ${{ env.IMAGE_NAME }} |
-        | 镜像版本 | ${{ github.event.inputs.version }} |
-        | 目标架构 | ${{ env.TARGET_ARCH }} |
-        | DBMind分支 | ${{ github.event.inputs.dbmind_branch }} |
-        | Python版本 | ${{ github.event.inputs.python_version }} |
-        | 构建时间 | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |
-        
-        ### 📦 下载产物
-        
-        - 文件名: ${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64.tar
-        - 包含SHA256校验和文件
-        
-        ### 🚀 使用方式
-        
-        \`\`\`bash
-        # 加载镜像
-        docker load -i ${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64.tar
-        
-        # 验证架构
-        docker inspect ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} | grep Architecture
-        
-        # 测试运行
-        docker run --rm -e DATASOURCE="postgresql://user:pass@host:port/db" \\
-          -p 9187:9187 ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}
-        \`\`\`
-        EOF
