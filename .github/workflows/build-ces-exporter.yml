@@ -65,23 +65,18 @@ jobs:
 
       - name: Generate clouds.yml without AK/SK
         run: |
-          # 生成不含 AK/SK 的配置文件（AK/SK 留空，运行时通过 Secret 注入）
-          cat > config-files/clouds.yml << 'EOF'
-global:
-  port: ":8087"
-  scrape_batch_size: 300
-  resource_sync_interval_minutes: 180
-  ignore_ssl_verify: false
-auth:
-  auth_url: "https://iam.REGION_PLACEHOLDER.myhuaweicloud.com/v3"
-  project_name: "PROJECT_PLACEHOLDER"
-  region: "REGION_PLACEHOLDER"
-  access_key: ""
-  secret_key: ""
-EOF
-          # 替换占位符
-          sed -i "s/REGION_PLACEHOLDER/${{ env.REGION }}/g" config-files/clouds.yml
-          sed -i "s/PROJECT_PLACEHOLDER/${{ env.PROJECT_NAME }}/g" config-files/clouds.yml
+          printf '%s\n' \
+            'global:' \
+            '  port: ":8087"' \
+            '  scrape_batch_size: 300' \
+            '  resource_sync_interval_minutes: 180' \
+            '  ignore_ssl_verify: false' \
+            'auth:' \
+            '  auth_url: "https://iam.'${{ env.REGION }}'.myhuaweicloud.com/v3"' \
+            '  project_name: "'${{ env.PROJECT_NAME }}'"' \
+            '  region: "'${{ env.REGION }}'"' \
+            '  access_key: ""' \
+            '  secret_key: ""' > config-files/clouds.yml
           
           echo "生成的 clouds.yml（AK/SK 已留空）："
           cat config-files/clouds.yml
