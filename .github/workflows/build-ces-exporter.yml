@@ -23,25 +23,28 @@ jobs:
             sed -i '1i package logs\n\nimport "fmt"\n' logs/logs.go
           fi
           
-          # 使用 Python 修复，注意转义
-          python3 << 'PYTHON_SCRIPT'
-import re
-with open('logs/logs.go', 'r') as f:
-    content = f.read()
-
-functions = ['Errorf', 'Warnf', 'Infof', 'Debugf']
-for func in functions:
-    pattern = r'(func \(lc \*LoggerConstructor\) ' + func + r'\(format string, v \.\.\.interface{}\) \{)'
-    replacement = r'\1\n\tif lc == nil || lc.logger == nil {\n\t\tfmt.Printf("[' + func.upper() + r'] "+format+"\\n", v...)\n\t\treturn\n\t}'
-    content = re.sub(pattern, replacement, content)
-
-with open('logs/logs.go', 'w') as f:
-    f.write(content)
-print("Fixed logs.go")
-PYTHON_SCRIPT
+          # 修复 Errorf
+          sed -i '/^func (lc \*LoggerConstructor) Errorf(/a \
+          if lc == nil || lc.logger == nil { \
+              fmt.Printf("[ERROR] "+format+"\\n", v...) \
+              return \
+          }' logs/logs.go
           
-          echo "Verification:"
-          grep -A 6 "func (lc \*LoggerConstructor) Errorf" logs/logs.go | head -8
+          # 修复 Warnf
+          sed -i '/^func (lc \*LoggerConstructor) Warnf(/a \
+          if lc == nil || lc.logger == nil { \
+              fmt.Printf("[WARN] "+format+"\\n", v...) \
+              return \
+          }' logs/logs.go
+          
+          # 修复 Infof
+          sed -i '/^func (lc \*LoggerConstructor) Infof(/a \
+          if lc == nil || lc.logger == nil { \
+              fmt.Printf("[INFO] "+format+"\\n", v...) \
+              return \
+          }' logs/logs.go
+          
+          echo "Fixed logs.go"
 
       - name: Setup Go
         uses: actions/setup-go@v5
