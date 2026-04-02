@@ -8,11 +8,23 @@ on:
         required: true
         default: 'v2.0.31'
         type: string
+      region:
+        description: '华为云区域 (如 cn-north-4)'
+        required: true
+        default: 'cn-north-4'
+        type: string
+      project_name:
+        description: '项目名称 (如 cn-north-4)'
+        required: true
+        default: 'cn-north-4'
+        type: string
 
 env:
   IMAGE_NAME: cloudeye-exporter
   IMAGE_TAG: ${{ github.event.inputs.exporter_version }}-arm64
   EXPORTER_REPO: https://github.com/huaweicloud/cloudeye-exporter.git
+  REGION: ${{ github.event.inputs.region }}
+  PROJECT_NAME: ${{ github.event.inputs.project_name }}
 
 jobs:
   build:
@@ -54,25 +66,35 @@ jobs:
           cp cloudeye-exporter-source/logs.yml config-files/ 2>/dev/null || true
           cp cloudeye-exporter-source/*.json config-files/ 2>/dev/null || true
           
-          echo "已复制的配置文件："
+          echo "复制完成，当前 config-files 目录："
           ls -la config-files/
           
-          # 验证关键配置文件是否存在
+          # 如果 clouds.yml 不存在或包含占位符，创建正确的配置
           if [ ! -f config-files/clouds.yml ]; then
-            echo "警告：在源码中未找到 clouds.yml 配置文件，将创建默认配置"
-            printf '%s\n' \
-              'global:' \
-              '  port: ":8087"' \
-              '  scrape_batch_size: 300' \
-              '  resource_sync_interval_minutes: 180' \
-              '  ignore_ssl_verify: false' \
-              'auth:' \
-              '  auth_url: "https://iam.{region_id}.myhuaweicloud.com/v3"' \
-              '  project_name: "cn-north-1"' \
-              '  region: "cn-north-1"' \
-              '  access_key: ""' \
-              '  secret_key: ""' > config-files/clouds.yml
+            echo "创建默认 clouds.yml 配置"
+            cat > config-files/clouds.yml << EOF
+global:
+  port: ":8087"
+  scrape_batch_size: 300
+  resource_sync_interval_minutes: 180
+  ignore_ssl_verify: false
+auth:
+  auth_url: "https://iam.${{ env.REGION }}.myhuaweicloud.com/v3"
+  project_name: "${{ env.PROJECT_NAME }}"
+  region: "${{ env.REGION }}"
+  access_key: ""
+  secret_key: ""
+EOF
+          else
+            # 替换已有配置文件中的占位符
+            echo "替换 clouds.yml 中的占位符..."
+            sed -i "s/{region_id}/${{ env.REGION }}/g" config-files/clouds.yml
+            sed -i "s/{project_name}/${{ env.PROJECT_NAME }}/g" config-files/clouds.yml
           fi
+          
+          # 显示最终配置（隐藏 AK/SK）
+          echo "最终 clouds.yml 配置（已脱敏）："
+          grep -v "access_key\|secret_key" config-files/clouds.yml || cat config-files/clouds.yml
 
       - name: Create Dockerfile
         run: |
