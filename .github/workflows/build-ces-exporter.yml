@@ -60,8 +60,6 @@ jobs:
           # 验证关键配置文件是否存在
           if [ ! -f config-files/clouds.yml ]; then
             echo "警告：在源码中未找到 clouds.yml 配置文件，将创建默认配置"
-            
-            # 使用 printf 代替 heredoc 避免 YAML 解析问题
             printf '%s\n' \
               'global:' \
               '  port: ":8087"' \
@@ -108,12 +106,8 @@ jobs:
           # 从构建阶段复制二进制文件
           COPY --from=builder /build/cloudeye-exporter /exporter/
 
-          # 从源码复制配置文件到镜像
-          COPY config-files/clouds.yml /exporter/
-          COPY config-files/endpoints.yml /exporter/ 2>/dev/null || true
-          COPY config-files/metric.yml /exporter/ 2>/dev/null || true
-          COPY config-files/logs.yml /exporter/ 2>/dev/null || true
-          COPY config-files/*.json /exporter/ 2>/dev/null || true
+          # 复制配置文件目录中的所有文件
+          COPY config-files/ /exporter/
 
           # 给二进制文件执行权限
           RUN chmod +x /exporter/cloudeye-exporter
