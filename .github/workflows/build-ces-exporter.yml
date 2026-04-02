@@ -1,4 +1,4 @@
-name: Build CES Exporter ARM64
+name: Build CES Exporter
 
 on:
   workflow_dispatch:
@@ -7,89 +7,62 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Clone source code
+      - name: Checkout code
         run: |
           git clone https://github.com/huaweicloud/cloudeye-exporter.git
           cd cloudeye-exporter
-          LATEST_TAG=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          git checkout $LATEST_TAG
-          echo "Building version: $LATEST_TAG"
+          git checkout $(git describe --tags $(git rev-list --tags --max-count=1))
 
-      - name: Fix nil pointer bug
+      - name: Fix nil pointer
         working-directory: ./cloudeye-exporter
         run: |
-          # 添加 fmt 导入
-          if ! grep -q '"fmt"' logs/logs.go; then
-            sed -i '1i package logs\n\nimport "fmt"\n' logs/logs.go
+          # 直接替换函数内容
+          cat > /tmp/fix.sh << 'SCRIPT'
+#!/bin/bash
+cd logs
+cp logs.go logs.go.bak
+# 用 awk 修复，避免 sed 复杂语法
+awk '
+/^func \(lc \*LoggerConstructor\) Errorf/ { print; print "    if lc == nil || lc.logger == nil {"; print "        fmt.Printf(\"[ERROR] \"+format+\"\\\\n\", v...)"; print "        return"; print "    }"; next }
+/^func \(lc \*LoggerConstructor\) Warnf/ { print; print "    if lc == nil || lc.logger == nil {"; print "        fmt.Printf(\"[WARN] \"+format+\"\\\\n\", v...)"; print "        return"; print "    }"; next }
+/^func \(lc \*LoggerConstructor\) Infof/ { print; print "    if lc == nil || lc.logger == nil {"; print "        fmt.Printf(\"[INFO] \"+format+\"\\\\n\", v...)"; print "        return"; print "    }"; next }
+{ print }
+' logs.go > logs.go.new
+mv logs.go.new logs.go
+SCRIPT
+          chmod +x /tmp/fix.sh
+          /tmp/fix.sh
+          
+          # 确保 fmt 包已导入
+          if ! grep -q '"fmt"' logs.go; then
+            sed -i '1i package logs\n\nimport "fmt"\n' logs.go
           fi
           
-          # 修复 Errorf - 使用分号分隔，避免反斜杠换行
-          sed -i '/^func (lc \*LoggerConstructor) Errorf(/a \    if lc == nil || lc.logger == nil { fmt.Printf("[ERROR] "+format+"\\n", v...); return }' logs/logs.go
-          
-          # 修复 Warnf
-          sed -i '/^func (lc \*LoggerConstructor) Warnf(/a \    if lc == nil || lc.logger == nil { fmt.Printf("[WARN] "+format+"\\n", v...); return }' logs/logs.go
-          
-          # 修复 Infof
-          sed -i '/^func (lc \*LoggerConstructor) Infof(/a \    if lc == nil || lc.logger == nil { fmt.Printf("[INFO] "+format+"\\n", v...); return }' logs/logs.go
-          
-          echo "Fixed logs.go"
-          
-          # 验证修复结果
-          echo "=== Verification ==="
-          grep -A 3 "func (lc \*LoggerConstructor) Errorf" logs/logs.go | head -6 || true
+          echo "Fix applied"
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
 
-      - name: Download dependencies
+      - name: Build
         working-directory: ./cloudeye-exporter
         run: |
           go mod download
-          go mod tidy
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o cloudeye-exporter main.go
 
-      - name: Build ARM64 binary
+      - name: Package
         working-directory: ./cloudeye-exporter
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o cloudeye-exporter main.go
-          file cloudeye-exporter
-          ls -lh cloudeye-exporter
-
-      - name: Create Dockerfile
-        working-directory: ./cloudeye-exporter
-        run: |
-          cat > Dockerfile << 'EOF'
-FROM alpine:3.19
-RUN apk add --no-cache ca-certificates
+          echo "FROM alpine:3.19
 COPY cloudeye-exporter /usr/local/bin/
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/cloudeye-exporter"]
-EOF
-
-      - name: Build Docker image
-        working-directory: ./cloudeye-exporter
-        run: |
+ENTRYPOINT [\"/usr/local/bin/cloudeye-exporter\"]" > Dockerfile
           docker build -t ces-exporter:arm64 .
-          docker images | grep ces-exporter || true
+          docker save ces-exporter:arm64 | gzip > ces-exporter-arm64.tar.gz
 
-      - name: Export image to tar
-        working-directory: ./cloudeye-exporter
-        run: |
-          docker save ces-exporter:arm64 -o ces-exporter-arm64.tar
-          gzip -9 ces-exporter-arm64.tar
-          ls -lh ces-exporter-arm64.tar.gz
-
-      - name: Upload artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: ces-exporter-arm64
           path: ./cloudeye-exporter/ces-exporter-arm64.tar.gz
-          retention-days: 7
-
-      - name: Show success message
-        run: |
-          echo "=========================================="
-          echo "Build completed successfully!"
-          echo "Download: ces-exporter-arm64.tar.gz from Artifacts"
-          echo "=========================================="
