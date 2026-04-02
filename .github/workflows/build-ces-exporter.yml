@@ -59,30 +59,26 @@ jobs:
           
           # 验证关键配置文件是否存在
           if [ ! -f config-files/clouds.yml ]; then
-            echo "警告：在源码中未找到 clouds.yml 配置文件"
-            echo "源码目录完整内容："
-            ls -la cloudeye-exporter-source/
-            echo "将创建默认 clouds.yml 配置"
+            echo "警告：在源码中未找到 clouds.yml 配置文件，将创建默认配置"
             
-            # 创建默认配置 - 注意 EOF 不能有缩进
-            cat > config-files/clouds.yml << 'EOF'
-global:
-  port: ":8087"
-  scrape_batch_size: 300
-  resource_sync_interval_minutes: 180
-  ignore_ssl_verify: false
-auth:
-  auth_url: "https://iam.{region_id}.myhuaweicloud.com/v3"
-  project_name: "cn-north-1"
-  region: "cn-north-1"
-  access_key: ""
-  secret_key: ""
-EOF
+            # 使用 printf 代替 heredoc 避免 YAML 解析问题
+            printf '%s\n' \
+              'global:' \
+              '  port: ":8087"' \
+              '  scrape_batch_size: 300' \
+              '  resource_sync_interval_minutes: 180' \
+              '  ignore_ssl_verify: false' \
+              'auth:' \
+              '  auth_url: "https://iam.{region_id}.myhuaweicloud.com/v3"' \
+              '  project_name: "cn-north-1"' \
+              '  region: "cn-north-1"' \
+              '  access_key: ""' \
+              '  secret_key: ""' > config-files/clouds.yml
           fi
 
       - name: Create Dockerfile
         run: |
-          cat > Dockerfile << 'EOF'
+          cat > Dockerfile << 'DOCKER_EOF'
           # 第一阶段：构建阶段
           FROM --platform=linux/arm64 golang:1.19-alpine AS builder
 
@@ -127,7 +123,7 @@ EOF
 
           # 启动程序
           ENTRYPOINT ["/exporter/cloudeye-exporter"]
-          EOF
+          DOCKER_EOF
 
       - name: Build Docker image for ARM64
         run: |
