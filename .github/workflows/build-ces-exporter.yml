@@ -69,7 +69,7 @@ jobs:
           echo "复制完成，当前 config-files 目录："
           ls -la config-files/
           
-          # 如果 clouds.yml 不存在或包含占位符，创建正确的配置
+          # 如果 clouds.yml 不存在，创建默认配置
           if [ ! -f config-files/clouds.yml ]; then
             echo "创建默认 clouds.yml 配置"
             cat > config-files/clouds.yml << EOF
@@ -86,7 +86,7 @@ auth:
   secret_key: ""
 EOF
           else
-            # 替换已有配置文件中的占位符
+            # 替换已有配置文件中的占位符 - 使用双引号包裹整个命令
             echo "替换 clouds.yml 中的占位符..."
             sed -i "s/{region_id}/${{ env.REGION }}/g" config-files/clouds.yml
             sed -i "s/{project_name}/${{ env.PROJECT_NAME }}/g" config-files/clouds.yml
