@@ -63,21 +63,27 @@ jobs:
           cp cloudeye-exporter-source/*.json config-files/ 2>/dev/null || true
           ls -la config-files/
 
-      - name: Generate clouds.yml with real values
+      - name: Generate clouds.yml without AK/SK
         run: |
-          echo "global:" > config-files/clouds.yml
-          echo "  port: \":8087\"" >> config-files/clouds.yml
-          echo "  scrape_batch_size: 300" >> config-files/clouds.yml
-          echo "  resource_sync_interval_minutes: 180" >> config-files/clouds.yml
-          echo "  ignore_ssl_verify: false" >> config-files/clouds.yml
-          echo "auth:" >> config-files/clouds.yml
-          echo "  auth_url: \"https://iam.${{ env.REGION }}.myhuaweicloud.com/v3\"" >> config-files/clouds.yml
-          echo "  project_name: \"${{ env.PROJECT_NAME }}\"" >> config-files/clouds.yml
-          echo "  region: \"${{ env.REGION }}\"" >> config-files/clouds.yml
-          echo "  access_key: \"\"" >> config-files/clouds.yml
-          echo "  secret_key: \"\"" >> config-files/clouds.yml
+          # 生成不含 AK/SK 的配置文件（AK/SK 留空，运行时通过 Secret 注入）
+          cat > config-files/clouds.yml << 'EOF'
+global:
+  port: ":8087"
+  scrape_batch_size: 300
+  resource_sync_interval_minutes: 180
+  ignore_ssl_verify: false
+auth:
+  auth_url: "https://iam.REGION_PLACEHOLDER.myhuaweicloud.com/v3"
+  project_name: "PROJECT_PLACEHOLDER"
+  region: "REGION_PLACEHOLDER"
+  access_key: ""
+  secret_key: ""
+EOF
+          # 替换占位符
+          sed -i "s/REGION_PLACEHOLDER/${{ env.REGION }}/g" config-files/clouds.yml
+          sed -i "s/PROJECT_PLACEHOLDER/${{ env.PROJECT_NAME }}/g" config-files/clouds.yml
           
-          echo "生成的 clouds.yml："
+          echo "生成的 clouds.yml（AK/SK 已留空）："
           cat config-files/clouds.yml
 
       - name: Create Dockerfile
@@ -121,7 +127,7 @@ jobs:
           # 暴露端口
           EXPOSE 8087
 
-          # 启动程序
+          # 启动程序（AK/SK 留空，运行时通过挂载或环境变量注入）
           ENTRYPOINT ["/exporter/cloudeye-exporter"]
           DOCKER_EOF
 
@@ -133,13 +139,10 @@ jobs:
             -t ${{ env.IMAGE_NAME }}:latest-arm64 \
             .
 
-      - name: Verify image architecture and files
+      - name: List image layers
         run: |
-          echo "镜像架构："
-          docker inspect ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} | grep Architecture
-          
-          echo "镜像内的 /exporter 目录内容："
-          docker run --rm ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ls -la /exporter/
+          echo "镜像列表："
+          docker images | grep ${{ env.IMAGE_NAME }}
 
       - name: Save image to tar file
         run: |
