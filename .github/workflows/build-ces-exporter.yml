@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       exporter_version:
-        description: 'CES Exporter 版本 (如 v2.0.3)'
+        description: 'CES Exporter 版本 (如 v2.0.31)'
         required: true
-        default: 'v2.0.3'
+        default: 'v2.0.31'
         type: string
 
 env:
@@ -34,17 +34,26 @@ jobs:
           git clone ${{ env.EXPORTER_REPO }} cloudeye-exporter-source
           cd cloudeye-exporter-source
           if [ "${{ github.event.inputs.exporter_version }}" != "latest" ]; then
-            git checkout tags/${{ github.event.inputs.exporter_version }} -b build-version
+            # 去掉版本号前的 'v' 前缀用于 tag
+            TAG_VERSION="${{ github.event.inputs.exporter_version }}"
+            TAG_VERSION=${TAG_VERSION#v}
+            git checkout tags/v${TAG_VERSION} -b build-version
           fi
 
       - name: Download official release package (for config files)
         run: |
-          # 下载官方 Release 包（x86 架构，但配置文件通用）
-          RELEASE_URL="https://github.com/huaweicloud/cloudeye-exporter/releases/download/${{ github.event.inputs.exporter_version }}/cloudeye-exporter-${{ github.event.inputs.exporter_version }}.tar.gz"
+          # 获取版本号（去掉可能存在的 v 前缀）
+          VERSION="${{ github.event.inputs.exporter_version }}"
+          VERSION=${VERSION#v}
+          
+          # 使用正确的 URL 格式（带点号，不是短横线）
+          RELEASE_URL="https://github.com/huaweicloud/cloudeye-exporter/releases/download/v${VERSION}/cloudeye-exporter.v${VERSION}.tar.gz"
+          
           echo "下载配置文件包: $RELEASE_URL"
           wget $RELEASE_URL -O cloudeye-exporter-release.tar.gz
           tar -xzvf cloudeye-exporter-release.tar.gz
-          # 解压后进入目录（目录名通常是 cloudeye-exporter）
+          
+          echo "解压后的文件列表："
           ls -la
 
       - name: Prepare config files directory
@@ -53,19 +62,14 @@ jobs:
           mkdir -p config-files
           
           # 从解压的 Release 包中复制配置文件
-          # 注意：需要根据实际解压后的目录结构调整路径
+          # 解压后的目录名通常是 cloudeye-exporter
           if [ -d "cloudeye-exporter" ]; then
-            cp cloudeye-exporter/clouds.yml config-files/ 2>/dev/null || true
-            cp cloudeye-exporter/endpoints.yml config-files/ 2>/dev/null || true
-            cp cloudeye-exporter/metric.yml config-files/ 2>/dev/null || true
-            cp cloudeye-exporter/logs.yml config-files/ 2>/dev/null || true
-            cp cloudeye-exporter/i18n.json config-files/ 2>/dev/null || true
-            cp cloudeye-exporter/unit_standard_transform.json config-files/ 2>/dev/null || true
+            cp cloudeye-exporter/*.yml config-files/ 2>/dev/null || true
+            cp cloudeye-exporter/*.json config-files/ 2>/dev/null || true
           else
             # 如果上述路径不对，尝试查找
-            find . -name "clouds.yml" -exec cp {} config-files/ \;
-            find . -name "endpoints.yml" -exec cp {} config-files/ \;
-            find . -name "metric.yml" -exec cp {} config-files/ \;
+            find . -name "*.yml" -exec cp {} config-files/ \;
+            find . -name "*.json" -exec cp {} config-files/ \;
           fi
           
           # 列出复制的文件
@@ -105,16 +109,14 @@ jobs:
           COPY --from=builder /build/cloudeye-exporter /exporter/
 
           # ============================================
-          # 关键步骤：使用 COPY 复制配置文件到镜像
+          # 使用 COPY 复制配置文件到镜像
           # ============================================
-          # 复制所有配置文件到工作目录
           COPY config-files/clouds.yml /exporter/
           COPY config-files/endpoints.yml /exporter/
           COPY config-files/metric.yml /exporter/
           COPY config-files/logs.yml /exporter/
-          # 如果有 i18n.json 和 unit_standard_transform.json 也复制
-          COPY config-files/i18n.json /exporter/ 2>/dev/null || true
-          COPY config-files/unit_standard_transform.json /exporter/ 2>/dev/null || true
+          # 复制 JSON 配置文件（如果存在）
+          COPY config-files/*.json /exporter/ 2>/dev/null || true
 
           # 给二进制文件执行权限
           RUN chmod +x /exporter/cloudeye-exporter
@@ -122,7 +124,7 @@ jobs:
           # 暴露端口
           EXPOSE 8087
 
-          # 启动程序（直接启动，会读取同目录下的配置文件）
+          # 启动程序
           ENTRYPOINT ["/exporter/cloudeye-exporter"]
           EOF
 
@@ -140,6 +142,7 @@ jobs:
           docker inspect ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} | grep Architecture
           
           # 检查镜像内的配置文件
+          echo "镜像内的 /exporter 目录内容："
           docker run --rm ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} ls -la /exporter/
 
       - name: Save image to tar file
@@ -156,3 +159,13 @@ jobs:
             ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz
             ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz.sha256
           retention-days: 7
+
+      - name: Upload to release (optional)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz
+            ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
