@@ -65,22 +65,17 @@ jobs:
 
       - name: Generate clouds.yml with real values
         run: |
-          cat > config-files/clouds.yml << 'EOF'
-global:
-  port: ":8087"
-  scrape_batch_size: 300
-  resource_sync_interval_minutes: 180
-  ignore_ssl_verify: false
-auth:
-  auth_url: "https://iam.REGION_PLACEHOLDER.myhuaweicloud.com/v3"
-  project_name: "PROJECT_PLACEHOLDER"
-  region: "REGION_PLACEHOLDER"
-  access_key: ""
-  secret_key: ""
-EOF
-          # 使用 envsubst 或 sed 替换占位符
-          sed -i "s/REGION_PLACEHOLDER/${{ env.REGION }}/g" config-files/clouds.yml
-          sed -i "s/PROJECT_PLACEHOLDER/${{ env.PROJECT_NAME }}/g" config-files/clouds.yml
+          echo "global:" > config-files/clouds.yml
+          echo "  port: \":8087\"" >> config-files/clouds.yml
+          echo "  scrape_batch_size: 300" >> config-files/clouds.yml
+          echo "  resource_sync_interval_minutes: 180" >> config-files/clouds.yml
+          echo "  ignore_ssl_verify: false" >> config-files/clouds.yml
+          echo "auth:" >> config-files/clouds.yml
+          echo "  auth_url: \"https://iam.${{ env.REGION }}.myhuaweicloud.com/v3\"" >> config-files/clouds.yml
+          echo "  project_name: \"${{ env.PROJECT_NAME }}\"" >> config-files/clouds.yml
+          echo "  region: \"${{ env.REGION }}\"" >> config-files/clouds.yml
+          echo "  access_key: \"\"" >> config-files/clouds.yml
+          echo "  secret_key: \"\"" >> config-files/clouds.yml
           
           echo "生成的 clouds.yml："
           cat config-files/clouds.yml
