@@ -1,0 +1,142 @@
+name: Pull and Package CES Exporter (ARM64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: '镜像标签（默认 latest）'
+        required: false
+        default: 'latest'
+        type: string
+
+env:
+  # 源镜像地址（华为云 SWR 上的公开镜像，支持 ARM64）
+  SOURCE_IMAGE: swr.cn-north-4.myhuaweicloud.com/opensource/cloudeye-exporter
+  IMAGE_TAG: ${{ github.event.inputs.image_tag || 'latest' }}
+  OUTPUT_TAR: ces-exporter-arm64.tar.gz
+
+jobs:
+  pull-and-package:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # =====================================================
+    # 1. 检查磁盘空间
+    # =====================================================
+    - name: Check disk space
+      run: |
+        echo "=== 磁盘空间检查 ==="
+        df -h
+        echo "当前工作目录: $(pwd)"
+        echo "可用空间: $(df -h . | tail -1 | awk '{print $4}')"
+
+    # =====================================================
+    # 2. 设置 Docker Buildx（支持多架构）
+    # =====================================================
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # =====================================================
+    # 3. 拉取 ARM64 架构的镜像
+    # =====================================================
+    - name: Pull ARM64 image
+      run: |
+        echo "=== 正在拉取镜像 ==="
+        echo "源: ${{ env.SOURCE_IMAGE }}:${{ env.IMAGE_TAG }}"
+        
+        # 拉取镜像（指定平台为 linux/arm64）
+        docker pull --platform linux/arm64 ${{ env.SOURCE_IMAGE }}:${{ env.IMAGE_TAG }}
+        
+        echo "=== 拉取完成，验证镜像 ==="
+        docker images | grep cloudeye-exporter
+
+    # =====================================================
+    # 4. 给镜像打一个友好的本地标签
+    # =====================================================
+    - name: Tag image locally
+      run: |
+        # 给镜像打一个简短的标签，方便使用
+        docker tag ${{ env.SOURCE_IMAGE }}:${{ env.IMAGE_TAG }} ces-exporter:arm64
+        
+        echo "=== 镜像列表 ==="
+        docker images | grep -E "ces-exporter|cloudeye"
+
+    # =====================================================
+    # 5. 导出为 tar 文件
+    # =====================================================
+    - name: Save image to tar
+      run: |
+        echo "=== 导出镜像为 tar 文件 ==="
+        
+        # 先导出 tar 文件
+        docker save -o ces-exporter-arm64.tar ces-exporter:arm64
+        
+        echo "=== tar 文件信息 ==="
+        ls -lh ces-exporter-arm64.tar
+        
+        # 压缩为 gz 格式，减小体积
+        echo "=== 压缩为 gz 格式 ==="
+        gzip -c ces-exporter-arm64.tar > ${{ env.OUTPUT_TAR }}
+        
+        echo "=== 压缩后文件信息 ==="
+        ls -lh ${{ env.OUTPUT_TAR }}
+        
+        # 计算 MD5 校验值
+        md5sum ${{ env.OUTPUT_TAR }} > ${{ env.OUTPUT_TAR }}.md5
+        echo "=== MD5 校验值 ==="
+        cat ${{ env.OUTPUT_TAR }}.md5
+
+    # =====================================================
+    # 6. 验证 tar 文件完整性
+    # =====================================================
+    - name: Verify tar file
+      run: |
+        echo "=== 验证 tar 文件完整性 ==="
+        
+        # 测试解压并重新加载（验证文件是否损坏）
+        mkdir -p /tmp/verify
+        cp ${{ env.OUTPUT_TAR }} /tmp/verify/
+        cd /tmp/verify
+        gunzip -c ${{ env.OUTPUT_TAR }} > verify.tar
+        docker load -i verify.tar
+        
+        echo "=== 验证成功，镜像可正常加载 ==="
+        docker images | grep ces-exporter
+
+    # =====================================================
+    # 7. 上传 tar 包作为 artifact
+    # =====================================================
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ces-exporter-arm64
+        path: |
+          ${{ env.OUTPUT_TAR }}
+          ${{ env.OUTPUT_TAR }}.md5
+        compression-level: 0
+        retention-days: 30
+
+    # =====================================================
+    # 8. 输出使用说明
+    # =====================================================
+    - name: Show usage instructions
+      run: |
+        echo "=========================================="
+        echo "✅ 镜像打包完成！"
+        echo "=========================================="
+        echo ""
+        echo "📦 下载文件: ces-exporter-arm64.tar.gz"
+        echo ""
+        echo "📋 使用步骤:"
+        echo "1. 下载 artifact 中的 tar.gz 文件"
+        echo "2. 解压: gunzip ces-exporter-arm64.tar.gz"
+        echo "3. 加载镜像: docker load -i ces-exporter-arm64.tar"
+        echo "4. 推送到你的镜像仓库:"
+        echo "   docker tag ces-exporter:arm64 your-registry/ces-exporter:latest"
+        echo "   docker push your-registry/ces-exporter:latest"
+        echo ""
+        echo "🔍 镜像信息:"
+        echo "   源: ${{ env.SOURCE_IMAGE }}:${{ env.IMAGE_TAG }}"
+        echo "   架构: linux/arm64"
+        echo "   本地标签: ces-exporter:arm64"
+        echo "=========================================="
