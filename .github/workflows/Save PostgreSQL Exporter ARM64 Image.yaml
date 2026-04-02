@@ -1,83 +1,139 @@
-name: Save PostgreSQL Exporter ARM64 Image
+name: Build openGauss-exporter Image for ARM64
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '镜像版本标签 (例如: v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+        type: string
+      dbmind_branch:
+        description: 'DBMind分支 (master/v3.0.x/v5.0.x)'
+        required: true
+        default: 'master'
+        type: string
+      python_version:
+        description: 'Python版本'
+        required: true
+        default: '3.8'
+        type: choice
+        options:
+          - '3.8'
+          - '3.9'
+          - '3.10'
+
+env:
+  IMAGE_NAME: opengauss-exporter
+  TARGET_ARCH: linux/arm64
 
 jobs:
-  save-image:
+  validate-and-build:
     runs-on: ubuntu-latest
-
+    
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/checkout@v3
       with:
-        go-version: '1.21'
+        path: repo
 
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
+      uses: docker/setup-qemu-action@v2
+      with:
+        platforms: arm64
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v2
+      with:
+        driver-opts: |
+          image=moby/buildkit:latest
+          network=host
 
-    - name: Clone PostgreSQL Exporter source
+    - name: Validate DBMind branch
       run: |
-        git clone --depth 1 https://github.com/prometheus-community/postgres_exporter.git
-        cd postgres_exporter
-        echo "Latest commit:"
-        git log -1 --oneline
+        echo "=== 验证DBMind分支存在性 ==="
+        BRANCH="${{ github.event.inputs.dbmind_branch }}"
+        git ls-remote --heads https://gitee.com/opengauss/openGauss-DBMind.git ${BRANCH} | grep -q ${BRANCH} || {
+          echo "❌ 分支 ${BRANCH} 不存在于 openGauss-DBMind 仓库"
+          echo "可用的分支列表:"
+          git ls-remote --heads https://gitee.com/opengauss/openGauss-DBMind.git | awk '{print $2}' | sed 's|refs/heads/||' | head -10
+          exit 1
+        }
+        echo "✅ 分支 ${BRANCH} 存在"
 
-    - name: Build ARM64 binary
-      working-directory: ./postgres_exporter
-      run: |
-        # 使用官方 Makefile 但指定架构
-        make build GOOS=linux GOARCH=arm64 CGO_ENABLED=0
-        # 如果上面不行，使用 go build 包含所有文件
-        # CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o postgres_exporter .
-        file postgres_exporter
-        ls -lh postgres_exporter
+    - name: Build openGauss-exporter for ARM64
+      uses: docker/build-push-action@v4
+      with:
+        context: repo
+        platforms: ${{ env.TARGET_ARCH }}
+        tags: |
+          ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}
+          ${{ env.IMAGE_NAME }}:latest
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          DBMIND_BRANCH=${{ github.event.inputs.dbmind_branch }}
+          EXPORTER_VERSION=${{ github.event.inputs.version }}
 
-    - name: Create Dockerfile
-      working-directory: ./postgres_exporter
+    - name: Verify image
       run: |
-        cat > Dockerfile << 'EOF'
-        FROM alpine:3.19
-        
-        RUN apk add --no-cache ca-certificates tzdata
-        
-        WORKDIR /app
-        
-        COPY postgres_exporter /app/postgres_exporter
-        
-        RUN chmod +x /app/postgres_exporter
-        
-        EXPOSE 9187
-        
-        ENTRYPOINT ["/app/postgres_exporter"]
-        CMD ["--web.listen-address=:9187"]
-        EOF
-
-    - name: Build ARM64 Docker image
-      run: |
-        cd postgres_exporter
-        docker buildx build \
-          --platform linux/arm64 \
-          --load \
-          -t postgres-exporter:arm64 \
-          -f Dockerfile \
-          .
-        docker images | grep postgres-exporter
+        echo "=== 镜像验证 ==="
+        docker images | grep ${{ env.IMAGE_NAME }}
+        echo ""
+        echo "=== 架构验证 ==="
+        docker inspect ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} | jq -r '.[0].Architecture'
+        echo ""
+        echo "=== 测试启动 ==="
+        docker run --rm ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} --help 2>&1 | head -20 || true
 
     - name: Save image as tar
       run: |
-        docker save postgres-exporter:arm64 -o postgres-exporter-arm64.tar
-        ls -lh postgres-exporter-arm64.tar
+        mkdir -p output
+        OUTPUT_FILE="output/${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64.tar"
+        docker save ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} -o ${OUTPUT_FILE}
+        echo "文件: $(ls -lh output/)"
+        echo "文件大小: $(du -h ${OUTPUT_FILE} | cut -f1)"
+        sha256sum ${OUTPUT_FILE} > ${OUTPUT_FILE}.sha256
 
-    - name: Upload tar file as artifact
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: postgres-exporter-arm64
-        path: postgres-exporter-arm64.tar
+        name: ${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64
+        path: output/*
+        retention-days: 30
         compression-level: 0
+
+    - name: Build summary
+      run: |
+        cat << EOF > $GITHUB_STEP_SUMMARY
+        ## 构建完成 ✅
+        
+        | 项目 | 值 |
+        |------|-----|
+        | 镜像名称 | ${{ env.IMAGE_NAME }} |
+        | 镜像版本 | ${{ github.event.inputs.version }} |
+        | 目标架构 | ${{ env.TARGET_ARCH }} |
+        | DBMind分支 | ${{ github.event.inputs.dbmind_branch }} |
+        | Python版本 | ${{ github.event.inputs.python_version }} |
+        | 构建时间 | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |
+        
+        ### 📦 下载产物
+        
+        - 文件名: ${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64.tar
+        - 包含SHA256校验和文件
+        
+        ### 🚀 使用方式
+        
+        \`\`\`bash
+        # 加载镜像
+        docker load -i ${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64.tar
+        
+        # 验证架构
+        docker inspect ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} | grep Architecture
+        
+        # 测试运行
+        docker run --rm -e DATASOURCE="postgresql://user:pass@host:port/db" \\
+          -p 9187:9187 ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}
+        \`\`\`
+        EOF
