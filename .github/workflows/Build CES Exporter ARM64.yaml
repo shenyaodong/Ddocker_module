@@ -1,0 +1,123 @@
+name: Build CES Exporter ARM64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone source code
+        run: |
+          git clone https://github.com/huaweicloud/cloudeye-exporter.git
+          cd cloudeye-exporter
+          # 获取最新稳定版本
+          LATEST_TAG=$(git tag | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          git checkout $LATEST_TAG
+          echo "Building version: $LATEST_TAG"
+
+      - name: Fix nil pointer bug
+        working-directory: ./cloudeye-exporter
+        run: |
+          # 在 logs.go 开头添加 fmt 导入（如果还没有）
+          if ! grep -q '"fmt"' logs/logs.go; then
+            sed -i '1i package logs\n\nimport "fmt"\n' logs/logs.go
+          fi
+          
+          # 修复 Errorf 函数
+          cat > /tmp/fix.py << 'PYTHON'
+import re
+import sys
+
+with open('logs/logs.go', 'r') as f:
+    content = f.read()
+
+# 定义需要修复的函数
+functions = ['Errorf', 'Warnf', 'Infof', 'Debugf']
+
+for func in functions:
+    # 查找函数定义
+    pattern = rf'(func \(lc \*LoggerConstructor\) {func}\(format string, v \.\.\.interface{{}}\) \{{)'
+    
+    def replace_func(match):
+        return match.group(1) + '''
+        if lc == nil || lc.logger == nil {
+                fmt.Printf("[' + func.upper() + '] "+format+"\\n", v...)
+                return
+        }'''
+    
+    content = re.sub(pattern, replace_func, content, flags=re.DOTALL)
+
+with open('logs/logs.go', 'w') as f:
+    f.write(content)
+print("✅ Fixed logs.go")
+PYTHON
+          python3 /tmp/fix.py
+          
+          # 验证修复结果
+          echo "=== Verification ==="
+          grep -A 6 "func (lc \*LoggerConstructor) Errorf" logs/logs.go | head -8
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Download dependencies
+        working-directory: ./cloudeye-exporter
+        run: |
+          go mod download
+          go mod tidy
+
+      - name: Build ARM64 binary
+        working-directory: ./cloudeye-exporter
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o cloudeye-exporter main.go
+          file cloudeye-exporter
+          ls -lh cloudeye-exporter
+
+      - name: Create Dockerfile
+        working-directory: ./cloudeye-exporter
+        run: |
+          cat > Dockerfile << 'DOCKEREOF'
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+COPY cloudeye-exporter /usr/local/bin/
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/cloudeye-exporter"]
+DOCKEREOF
+          cat Dockerfile
+
+      - name: Build Docker image
+        working-directory: ./cloudeye-exporter
+        run: |
+          docker build -t ces-exporter:arm64 .
+          docker images | grep ces-exporter
+
+      - name: Export image to tar
+        working-directory: ./cloudeye-exporter
+        run: |
+          docker save ces-exporter:arm64 -o ces-exporter-arm64.tar
+          gzip -9 ces-exporter-arm64.tar
+          ls -lh ces-exporter-arm64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ces-exporter-arm64
+          path: ./cloudeye-exporter/ces-exporter-arm64.tar.gz
+          retention-days: 7
+
+      - name: Show success message
+        run: |
+          echo "=========================================="
+          echo "✅ Build completed successfully!"
+          echo "=========================================="
+          echo ""
+          echo "📦 Download: ces-exporter-arm64.tar.gz from Artifacts"
+          echo ""
+          echo "📋 Usage:"
+          echo "  gunzip ces-exporter-arm64.tar.gz"
+          echo "  docker load -i ces-exporter-arm64.tar"
+          echo "  docker tag ces-exporter:arm64 your-registry/ces-exporter:latest"
+          echo "=========================================="
