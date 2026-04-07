@@ -1,124 +1,187 @@
-name: Build openGauss-exporter Image for ARM64
+name: Build CES Exporter ARM64 Image
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: '镜像版本标签 (例如: v1.0.0)'
+      exporter_version:
+        description: 'CES Exporter 版本 (如 v2.0.31)'
         required: true
-        default: 'v1.0.0'
+        default: 'v2.0.31'
         type: string
-      dbmind_branch:
-        description: 'DBMind分支 (master/v3.0.x/v5.0.x)'
+      region:
+        description: '华为云区域'
         required: true
-        default: 'master'
+        default: 'cgo-e-01'
+        type: string
+      project_name:
+        description: '项目名称'
+        required: true
+        default: 'cgo-e-01'
         type: string
 
 env:
-  IMAGE_NAME: opengauss-exporter
-  TARGET_ARCH: linux/arm64
+  IMAGE_NAME: cloudeye-exporter
+  IMAGE_TAG: ${{ github.event.inputs.exporter_version }}-arm64
+  EXPORTER_REPO: https://github.com/huaweicloud/cloudeye-exporter.git
+  REGION: ${{ github.event.inputs.region }}
+  PROJECT_NAME: ${{ github.event.inputs.project_name }}
 
 jobs:
-  validate-and-build:
+  build:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout workflow code
+        uses: actions/checkout@v4
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v2
-      with:
-        platforms: arm64
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Validate DBMind branch
-      run: |
-        echo "=== 验证DBMind分支存在性 ==="
-        BRANCH="${{ github.event.inputs.dbmind_branch }}"
-        git ls-remote --heads https://gitee.com/opengauss/openGauss-DBMind.git ${BRANCH} | grep -q ${BRANCH} || {
-          echo "❌ 分支 ${BRANCH} 不存在"
-          exit 1
-        }
-        echo "✅ 分支 ${BRANCH} 存在"
+      - name: Clone CES Exporter source code
+        run: |
+          git clone ${{ env.EXPORTER_REPO }} cloudeye-exporter-source
+          cd cloudeye-exporter-source
+          if [ "${{ github.event.inputs.exporter_version }}" != "latest" ]; then
+            TAG_VERSION="${{ github.event.inputs.exporter_version }}"
+            TAG_VERSION=${TAG_VERSION#v}
+            git checkout tags/v${TAG_VERSION} -b build-version
+          fi
+          echo "源码目录内容："
+          ls -la
 
-    - name: Prepare config files
-      run: |
-        # 创建配置文件目录
-        mkdir -p config-files
-        
-        # 创建默认配置文件（从源码获取或使用默认值）
-        # 注意：这里需要根据你的实际需求填写正确的内容
-        
-        # clouds.yml
-        cat > config-files/clouds.yml << 'EOF'
-global:
-  port: "8080"
-  scrape_batch_size: 300
-  resource_sync_interval_minutes: 180
-  ignore_ssl_verify: true
-auth:
-  auth_url: "https://iam.xxx.myhuaweicloud.com/v3"
-  region: "cn-north-4"
-  project_name: "cn-north-4"
-  access_key: ""
-  secret_key: ""
-EOF
-        
-        # logs.yml
-        cat > config-files/logs.yml << 'EOF'
-level: info
-encoding: console
-outputPaths:
-  - stdout
-errorOutputPaths:
-  - stderr
-EOF
-        
-        # metric.yml（空文件或基础配置）
-        echo "# metric configuration" > config-files/metric.yml
-        
-        # endpoints.yml（空文件或基础配置）
-        echo "# endpoints configuration" > config-files/endpoints.yml
-        
-        echo "配置文件已创建："
-        ls -la config-files/
+      - name: Generate config files (without AK/SK)
+        run: |
+          mkdir -p config-files
+          
+          # clouds.yml - AK/SK 留空，运行时通过 Secret 注入
+          printf '%s\n' \
+            'global:' \
+            '  port: "8080"' \
+            '  scrape_batch_size: 300' \
+            '  resource_sync_interval_minutes: 180' \
+            '  ignore_ssl_verify: true' \
+            'auth:' \
+            '  auth_url: "https://iam-apigateway-proxy.xclouda.xfusion.com/v3"' \
+            '  region: "'${{ env.REGION }}'"' \
+            '  project_name: "'${{ env.PROJECT_NAME }}'"' \
+            '  access_key: ""' \
+            '  secret_key: ""' > config-files/clouds.yml
+          
+          # logs.yml
+          printf '%s\n' \
+            'level: info' \
+            'encoding: console' \
+            'outputPaths:' \
+            '  - stdout' \
+            'errorOutputPaths:' \
+            '  - stderr' > config-files/logs.yml
+          
+          # metric.yml
+          if [ -f "cloudeye-exporter-source/metric.yml" ]; then
+            cp cloudeye-exporter-source/metric.yml config-files/
+          else
+            printf '%s\n' '# metric configuration' > config-files/metric.yml
+          fi
+          
+          # endpoints.yml
+          if [ -f "cloudeye-exporter-source/endpoints.yml" ]; then
+            cp cloudeye-exporter-source/endpoints.yml config-files/
+          else
+            printf '%s\n' '# endpoints configuration' > config-files/endpoints.yml
+          fi
+          
+          # 复制 JSON 配置文件（如果存在）
+          cp cloudeye-exporter-source/*.json config-files/ 2>/dev/null || true
+          
+          echo "=== 生成的配置文件 ==="
+          ls -la config-files/
+          echo "=== clouds.yml 内容（AK/SK 已留空）==="
+          cat config-files/clouds.yml
 
-    - name: Build Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        file: ./Dockerfile
-        platforms: ${{ env.TARGET_ARCH }}
-        tags: |
-          ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }}
-          ${{ env.IMAGE_NAME }}:latest
-        load: true
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        build-args: |
-          DBMIND_BRANCH=${{ github.event.inputs.dbmind_branch }}
-          EXPORTER_VERSION=${{ github.event.inputs.version }}
+      - name: Create Dockerfile
+        run: |
+          cat > Dockerfile << 'DOCKER_EOF'
+          # 第一阶段：构建阶段
+          FROM --platform=linux/arm64 golang:1.19-alpine AS builder
 
-    - name: Verify image contents
-      run: |
-        echo "=== 验证镜像内容 ==="
-        docker run --rm ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} ls -la /exporter/
-        docker run --rm ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} ls -la /exporter/clouds.yml || echo "clouds.yml 不存在"
+          ENV GO111MODULE=on \
+              GOPROXY=https://goproxy.cn,direct \
+              CGO_ENABLED=0 \
+              GOOS=linux \
+              GOARCH=arm64
 
-    - name: Save image as tar
-      run: |
-        mkdir -p output
-        OUTPUT_FILE="output/${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64.tar"
-        docker save ${{ env.IMAGE_NAME }}:${{ github.event.inputs.version }} -o ${OUTPUT_FILE}
-        echo "生成文件: $(ls -lh output/)"
+          WORKDIR /build
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ env.IMAGE_NAME }}-${{ github.event.inputs.version }}-arm64
-        path: output/*.tar
-        retention-days: 30
-        compression-level: 0
+          # 复制源代码并编译
+          COPY cloudeye-exporter-source/ .
+          RUN go mod download
+          RUN go build -ldflags="-s -w" -o cloudeye-exporter .
+
+          # 第二阶段：运行阶段
+          FROM --platform=linux/arm64 alpine:latest
+
+          # 安装必要工具和 ca-certificates
+          RUN apk --no-cache add ca-certificates tzdata
+
+          # 创建 exporter 工作目录
+          RUN mkdir -p /exporter
+          WORKDIR /exporter
+
+          # 从构建阶段复制二进制文件
+          COPY --from=builder /build/cloudeye-exporter /exporter/
+
+          # 复制所有配置文件
+          COPY config-files/ /exporter/
+
+          # 给二进制文件执行权限
+          RUN chmod +x /exporter/cloudeye-exporter
+
+          # 暴露端口
+          EXPOSE 8080
+
+          # 启动程序（AK/SK 通过启动脚本传入，不在镜像中）
+          ENTRYPOINT ["/exporter/cloudeye-exporter"]
+          DOCKER_EOF
+
+      - name: Build Docker image for ARM64
+        run: |
+          docker build \
+            --platform linux/arm64 \
+            -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            -t ${{ env.IMAGE_NAME }}:latest-arm64 \
+            .
+
+      - name: Verify image contents
+        run: |
+          echo "=== 验证镜像内容 ==="
+          docker run --rm --entrypoint ls ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -la /exporter/
+          echo ""
+          echo "=== 检查关键文件 ==="
+          docker run --rm --entrypoint test ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f /exporter/clouds.yml && echo "✓ clouds.yml 存在" || echo "✗ clouds.yml 缺失"
+          docker run --rm --entrypoint test ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f /exporter/logs.yml && echo "✓ logs.yml 存在" || echo "✗ logs.yml 缺失"
+          docker run --rm --entrypoint test ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f /exporter/cloudeye-exporter && echo "✓ 二进制文件存在" || echo "✗ 二进制文件缺失"
+          echo ""
+          echo "=== 验证 AK/SK 未写入镜像 ==="
+          docker run --rm --entrypoint cat ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} /exporter/clouds.yml | grep -E "access_key|secret_key"
+
+      - name: Save image to tar file
+        run: |
+          docker save ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -o ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
+          gzip ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
+          sha256sum ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz > ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz.sha256
+          echo "生成的文件："
+          ls -lh *.tar.gz*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudeye-exporter-arm64-image
+          path: |
+            ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz
+            ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz.sha256
+          retention-days: 7
+          compression-level: 0
