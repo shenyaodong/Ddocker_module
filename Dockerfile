@@ -1,77 +1,51 @@
-# Dockerfile - openGauss-exporter for ARM64
-FROM python:3.8-slim AS builder
+# 第一阶段：构建阶段
+FROM --platform=linux/arm64 golang:1.19-alpine AS builder
+
+ARG DBMIND_BRANCH=master
+
+ENV GO111MODULE=on \
+    GOPROXY=https://goproxy.cn,direct \
+    CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=arm64
 
 WORKDIR /build
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    gcc \
-    g++ \
-    make \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+# 克隆 openGauss-DBMind 源码
+RUN git clone --branch ${DBMIND_BRANCH} --depth 1 https://gitee.com/opengauss/openGauss-DBMind.git .
 
-ARG DBMIND_BRANCH=master
-ARG EXPORTER_VERSION=latest
+# 编译 openGauss-exporter
+WORKDIR /build/tools/exporter
+RUN go mod download
+RUN go build -ldflags="-s -w" -o openGauss-exporter .
 
-RUN git clone --depth 1 -b ${DBMIND_BRANCH} https://gitee.com/opengauss/openGauss-DBMind.git openGauss-DBMind
+# 第二阶段：运行阶段
+FROM --platform=linux/arm64 alpine:latest
 
-RUN if [ ! -d "openGauss-DBMind/dbmind/components/opengauss_exporter" ]; then \
-        echo "ERROR: opengauss_exporter component not found!" && exit 1; \
-    fi
+RUN apk --no-cache add ca-certificates tzdata
 
-RUN cat > requirements.txt << 'EOF'
-psycopg2-binary>=2.9.0
-prometheus-client>=0.14.0
-click>=8.0.0
-EOF
+# 创建 exporter 工作目录（改为 /exporter）
+RUN mkdir -p /exporter
+WORKDIR /exporter
 
-RUN pip install --user --no-cache-dir -r requirements.txt
+# 从构建阶段复制二进制文件
+COPY --from=builder /build/tools/exporter/openGauss-exporter /exporter/
 
-FROM python:3.8-slim
+# ============================================
+# 复制配置文件到 /exporter 目录
+# ============================================
+COPY config-files/clouds.yml /exporter/
+COPY config-files/logs.yml /exporter/
+COPY config-files/metric.yml /exporter/
+COPY config-files/endpoints.yml /exporter/
+# 如果有 i18n.json 也复制
+COPY config-files/i18n.json /exporter/ 2>/dev/null || true
 
-RUN groupadd -r dbmind && useradd -r -g dbmind dbmind
+# 给二进制文件执行权限
+RUN chmod +x /exporter/openGauss-exporter
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    libpq5 \
-    && rm -rf /var/lib/apt/lists/*
+# 暴露端口
+EXPOSE 8080
 
-COPY --from=builder /build/openGauss-DBMind /opt/openGauss-DBMind
-COPY --from=builder /root/.local /home/dbmind/.local
-
-ENV PATH="/home/dbmind/.local/bin:${PATH}" \
-    PYTHONUNBUFFERED=1 \
-    PYTHONPATH="/opt/openGauss-DBMind:${PYTHONPATH}"
-
-WORKDIR /opt/openGauss-DBMind
-
-RUN cat > /entrypoint.sh << 'EOF'
-#!/bin/bash
-set -e
-
-DEFAULT_LISTEN_ADDR="0.0.0.0"
-DEFAULT_LISTEN_PORT="9187"
-
-if [ -z "$DATASOURCE" ]; then
-    echo "ERROR: DATASOURCE environment variable not set"
-    echo "Example: -e DATASOURCE='postgresql://user:pass@host:port/db'"
-    exit 1
-fi
-
-exec gs_dbmind component opengauss_exporter \
-    --url "$DATASOURCE" \
-    --web.listen-address "${LISTEN_ADDR:-$DEFAULT_LISTEN_ADDR}" \
-    --web.listen-port "${LISTEN_PORT:-$DEFAULT_LISTEN_PORT}" \
-    --disable-https \
-    --log.level "${LOG_LEVEL:-info}"
-EOF
-
-RUN chmod +x /entrypoint.sh
-
-USER dbmind
-
-EXPOSE 9187
-
-ENTRYPOINT ["/entrypoint.sh"]
+# 启动程序（工作目录是 /exporter，配置文件就在当前目录）
+ENTRYPOINT ["/exporter/openGauss-exporter"]
