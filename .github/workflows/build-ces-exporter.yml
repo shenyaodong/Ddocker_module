@@ -91,13 +91,13 @@ EOF
           COPY --from=builder /build/cloudeye-exporter /exporter/
           COPY config-files/ /exporter/
           RUN chmod +x /exporter/cloudeye-exporter && chmod 666 /exporter/clouds.yml
-          RUN echo '#!/bin/sh' > /exporter/start.sh
-          RUN echo 'if [ -n "$AUTH_URL" ]; then sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml; fi' >> /exporter/start.sh
-          RUN echo 'if [ -n "$PROJECT_NAME" ]; then sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml; fi' >> /exporter/start.sh
-          RUN echo 'if [ -n "$REGION" ]; then sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml; fi' >> /exporter/start.sh
-          RUN echo 'if [ -n "$HUAWEI_CLOUD_AK" ]; then sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml; fi' >> /exporter/start.sh
-          RUN echo 'if [ -n "$HUAWEI_CLOUD_SK" ]; then sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml; fi' >> /exporter/start.sh
-          RUN echo 'exec /exporter/cloudeye-exporter "$@"' >> /exporter/start.sh
+          RUN printf '#!/bin/sh\n' > /exporter/start.sh
+          RUN printf 'if [ -n "$AUTH_URL" ]; then sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
+          RUN printf 'if [ -n "$PROJECT_NAME" ]; then sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
+          RUN printf 'if [ -n "$REGION" ]; then sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
+          RUN printf 'if [ -n "$HUAWEI_CLOUD_AK" ]; then sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
+          RUN printf 'if [ -n "$HUAWEI_CLOUD_SK" ]; then sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
+          RUN printf 'exec /exporter/cloudeye-exporter "$@"\n' >> /exporter/start.sh
           RUN chmod 755 /exporter/start.sh
           EXPOSE 8080
           ENTRYPOINT ["/exporter/start.sh"]
