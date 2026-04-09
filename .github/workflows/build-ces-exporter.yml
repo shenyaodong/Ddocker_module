@@ -43,7 +43,6 @@ jobs:
       - name: Generate config files
         run: |
           mkdir -p config-files
-          
           cat > config-files/clouds.yml << 'EOF'
 global:
   prefix: "huaweicloud"
@@ -57,12 +56,10 @@ auth:
   secret_key: ""
   region: "REGION_PLACEHOLDER"
 EOF
-          
           cat > config-files/endpoints.yml << 'EOF'
 "ewp":
   "https://cloudsite-internal.cn-north-4.myhuaweicloud.com"
 EOF
-          
           cat > config-files/logs.yml << 'EOF'
 business:
   - level: "error"
@@ -75,7 +72,6 @@ business:
     enabled: true
     commpress: true
 EOF
-          
           echo '# metric configuration' > config-files/metric.yml
           ls -la config-files/
 
@@ -87,8 +83,7 @@ EOF
           WORKDIR /build
           COPY cloudeye-exporter-source/ .
           RUN go mod download
-          RUN go build -ldflags="-s -w" -o cloudeye-exporter .
-          
+          RUN go build -ldflags="-s -w" -o cloudeye-exporter
           FROM --platform=linux/arm64 alpine:latest
           RUN apk --no-cache add ca-certificates tzdata sed
           RUN mkdir -p /exporter
@@ -96,26 +91,13 @@ EOF
           COPY --from=builder /build/cloudeye-exporter /exporter/
           COPY config-files/ /exporter/
           RUN chmod +x /exporter/cloudeye-exporter && chmod 666 /exporter/clouds.yml
-          
           RUN echo '#!/bin/sh' > /exporter/start.sh
-          RUN echo 'set -e' >> /exporter/start.sh
-          RUN echo 'if [ -n "$AUTH_URL" ]; then' >> /exporter/start.sh
-          RUN echo '  sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml' >> /exporter/start.sh
-          RUN echo 'fi' >> /exporter/start.sh
-          RUN echo 'if [ -n "$PROJECT_NAME" ]; then' >> /exporter/start.sh
-          RUN echo '  sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml' >> /exporter/start.sh
-          RUN echo 'fi' >> /exporter/start.sh
-          RUN echo 'if [ -n "$REGION" ]; then' >> /exporter/start.sh
-          RUN echo '  sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml' >> /exporter/start.sh
-          RUN echo 'fi' >> /exporter/start.sh
-          RUN echo 'if [ -n "$HUAWEI_CLOUD_AK" ]; then' >> /exporter/start.sh
-          RUN echo '  sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml' >> /exporter/start.sh
-          RUN echo 'fi' >> /exporter/start.sh
-          RUN echo 'if [ -n "$HUAWEI_CLOUD_SK" ]; then' >> /exporter/start.sh
-          RUN echo '  sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml' >> /exporter/start.sh
-          RUN echo 'fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$AUTH_URL" ]; then sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml; fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$PROJECT_NAME" ]; then sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml; fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$REGION" ]; then sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml; fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$HUAWEI_CLOUD_AK" ]; then sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml; fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$HUAWEI_CLOUD_SK" ]; then sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml; fi' >> /exporter/start.sh
           RUN echo 'exec /exporter/cloudeye-exporter "$@"' >> /exporter/start.sh
-          
           RUN chmod 755 /exporter/start.sh
           EXPOSE 8080
           ENTRYPOINT ["/exporter/start.sh"]
