@@ -22,9 +22,10 @@ RUN go build -ldflags="-s -w" -o openGauss-exporter .
 # 第二阶段：运行阶段
 FROM --platform=linux/arm64 alpine:latest
 
-RUN apk --no-cache add ca-certificates tzdata
+# 安装必要工具（添加 sed 用于替换占位符）
+RUN apk --no-cache add ca-certificates tzdata sed
 
-# 创建 exporter 工作目录（改为 /exporter）
+# 创建 exporter 工作目录
 RUN mkdir -p /exporter
 WORKDIR /exporter
 
@@ -41,11 +42,45 @@ COPY config-files/endpoints.yml /exporter/
 # 如果有 i18n.json 也复制
 COPY config-files/i18n.json /exporter/ 2>/dev/null || true
 
-# 给二进制文件执行权限
-RUN chmod +x /exporter/openGauss-exporter
+# ============================================
+# 修改文件权限，使其可写（用于运行时注入 AK/SK）
+# ============================================
+RUN chmod +x /exporter/openGauss-exporter && \
+    chmod 666 /exporter/clouds.yml && \
+    chmod 666 /exporter/logs.yml && \
+    chmod 666 /exporter/endpoints.yml && \
+    chmod 666 /exporter/metric.yml && \
+    chmod 666 /exporter/*.json 2>/dev/null || true
+
+# ============================================
+# 创建启动脚本（用于替换占位符）
+# ============================================
+RUN cat > /exporter/start.sh << 'EOF'
+#!/bin/sh
+# 替换 clouds.yml 中的占位符
+if [ -n "$AUTH_URL" ]; then
+    sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml
+fi
+if [ -n "$PROJECT_NAME" ]; then
+    sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml
+fi
+if [ -n "$REGION" ]; then
+    sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml
+fi
+if [ -n "$HUAWEI_CLOUD_AK" ]; then
+    sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml
+fi
+if [ -n "$HUAWEI_CLOUD_SK" ]; then
+    sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml
+fi
+# 启动 exporter
+exec /exporter/openGauss-exporter "$@"
+EOF
+
+RUN chmod 755 /exporter/start.sh
 
 # 暴露端口
 EXPOSE 8080
 
-# 启动程序（工作目录是 /exporter，配置文件就在当前目录）
-ENTRYPOINT ["/exporter/openGauss-exporter"]
+# 使用启动脚本作为入口点
+ENTRYPOINT ["/exporter/start.sh"]
