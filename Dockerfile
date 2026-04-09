@@ -1,8 +1,6 @@
 # 第一阶段：构建阶段
 FROM --platform=linux/arm64 golang:1.19-alpine AS builder
 
-ARG DBMIND_BRANCH=master
-
 ENV GO111MODULE=on \
     GOPROXY=https://goproxy.cn,direct \
     CGO_ENABLED=0 \
@@ -11,18 +9,15 @@ ENV GO111MODULE=on \
 
 WORKDIR /build
 
-# 克隆 openGauss-DBMind 源码
-RUN git clone --branch ${DBMIND_BRANCH} --depth 1 https://gitee.com/opengauss/openGauss-DBMind.git .
-
-# 编译 openGauss-exporter
-WORKDIR /build/tools/exporter
+# 复制源代码并编译
+COPY cloudeye-exporter-source/ .
 RUN go mod download
-RUN go build -ldflags="-s -w" -o openGauss-exporter .
+RUN go build -ldflags="-s -w" -o cloudeye-exporter .
 
 # 第二阶段：运行阶段
 FROM --platform=linux/arm64 alpine:latest
 
-# 安装必要工具（添加 sed 用于替换占位符）
+# 安装必要工具
 RUN apk --no-cache add ca-certificates tzdata sed
 
 # 创建 exporter 工作目录
@@ -30,52 +25,40 @@ RUN mkdir -p /exporter
 WORKDIR /exporter
 
 # 从构建阶段复制二进制文件
-COPY --from=builder /build/tools/exporter/openGauss-exporter /exporter/
+COPY --from=builder /build/cloudeye-exporter /exporter/
 
-# ============================================
-# 复制配置文件到 /exporter 目录
-# ============================================
-COPY config-files/clouds.yml /exporter/
-COPY config-files/logs.yml /exporter/
-COPY config-files/metric.yml /exporter/
-COPY config-files/endpoints.yml /exporter/
-# 如果有 i18n.json 也复制
-COPY config-files/i18n.json /exporter/ 2>/dev/null || true
+# 复制所有配置文件
+COPY config-files/ /exporter/
 
-# ============================================
-# 修改文件权限，使其可写（用于运行时注入 AK/SK）
-# ============================================
-RUN chmod +x /exporter/openGauss-exporter && \
+# 给二进制文件执行权限，配置文件改为可写
+RUN chmod +x /exporter/cloudeye-exporter && \
     chmod 666 /exporter/clouds.yml && \
     chmod 666 /exporter/logs.yml && \
     chmod 666 /exporter/endpoints.yml && \
-    chmod 666 /exporter/metric.yml && \
-    chmod 666 /exporter/*.json 2>/dev/null || true
+    chmod 666 /exporter/metric.yml
 
-# ============================================
-# 创建启动脚本（用于替换占位符）
-# ============================================
-RUN cat > /exporter/start.sh << 'EOF'
-#!/bin/sh
-# 替换 clouds.yml 中的占位符
-if [ -n "$AUTH_URL" ]; then
-    sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml
-fi
-if [ -n "$PROJECT_NAME" ]; then
-    sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml
-fi
-if [ -n "$REGION" ]; then
-    sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml
-fi
-if [ -n "$HUAWEI_CLOUD_AK" ]; then
-    sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml
-fi
-if [ -n "$HUAWEI_CLOUD_SK" ]; then
-    sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml
-fi
-# 启动 exporter
-exec /exporter/openGauss-exporter "$@"
-EOF
+# 创建启动脚本
+RUN echo '#!/bin/sh' > /exporter/start.sh && \
+    echo '' >> /exporter/start.sh && \
+    echo '# 替换占位符' >> /exporter/start.sh && \
+    echo 'if [ -n "$AUTH_URL" ]; then' >> /exporter/start.sh && \
+    echo '    sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml' >> /exporter/start.sh && \
+    echo 'fi' >> /exporter/start.sh && \
+    echo 'if [ -n "$PROJECT_NAME" ]; then' >> /exporter/start.sh && \
+    echo '    sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml' >> /exporter/start.sh && \
+    echo 'fi' >> /exporter/start.sh && \
+    echo 'if [ -n "$REGION" ]; then' >> /exporter/start.sh && \
+    echo '    sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml' >> /exporter/start.sh && \
+    echo 'fi' >> /exporter/start.sh && \
+    echo 'if [ -n "$HUAWEI_CLOUD_AK" ]; then' >> /exporter/start.sh && \
+    echo '    sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml' >> /exporter/start.sh && \
+    echo 'fi' >> /exporter/start.sh && \
+    echo 'if [ -n "$HUAWEI_CLOUD_SK" ]; then' >> /exporter/start.sh && \
+    echo '    sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml' >> /exporter/start.sh && \
+    echo 'fi' >> /exporter/start.sh && \
+    echo '' >> /exporter/start.sh && \
+    echo '# 启动 exporter' >> /exporter/start.sh && \
+    echo 'exec /exporter/cloudeye-exporter "$@"' >> /exporter/start.sh
 
 RUN chmod 755 /exporter/start.sh
 
