@@ -8,23 +8,11 @@ on:
         required: true
         default: 'v2.0.31'
         type: string
-      region:
-        description: '华为云区域'
-        required: true
-        default: 'cgo-e-01'
-        type: string
-      project_name:
-        description: '项目名称'
-        required: true
-        default: 'cgo-e-01'
-        type: string
 
 env:
   IMAGE_NAME: cloudeye-exporter
   IMAGE_TAG: ${{ github.event.inputs.exporter_version }}-arm64
   EXPORTER_REPO: https://github.com/huaweicloud/cloudeye-exporter.git
-  REGION: ${{ github.event.inputs.region }}
-  PROJECT_NAME: ${{ github.event.inputs.project_name }}
 
 jobs:
   build:
@@ -53,53 +41,79 @@ jobs:
           echo "源码目录内容："
           ls -la
 
-      - name: Generate config files (without AK/SK)
+      - name: Generate config files (all placeholders)
         run: |
           mkdir -p config-files
           
-          # clouds.yml - AK/SK 留空，运行时通过 Secret 注入
-          printf '%s\n' \
-            'global:' \
-            '  port: "8080"' \
-            '  scrape_batch_size: 300' \
-            '  resource_sync_interval_minutes: 180' \
-            '  ignore_ssl_verify: true' \
-            'auth:' \
-            '  auth_url: "https://iam-apigateway-proxy.xclouda.xfusion.com/v3"' \
-            '  region: "'${{ env.REGION }}'"' \
-            '  project_name: "'${{ env.PROJECT_NAME }}'"' \
-            '  access_key: ""' \
-            '  secret_key: ""' > config-files/clouds.yml
+          # ============================================
+          # 1. clouds.yml - 全部使用占位符
+          # ============================================
+          cat > config-files/clouds.yml << 'EOF'
+global:
+  prefix: "huaweicloud"
+  scrape_batch_size: 300
+  resource_sync_interval_minutes: 180
+  ignore_ssl_verify: false
+  proxy_schema: ""
+  proxy_host: ""
+  proxy_port: 0
+  proxy_username: ""
+  proxy_password: ""
+  rms_retry_times: 1
+auth:
+  auth_url: "AUTH_URL_PLACEHOLDER"
+  project_name: "PROJECT_NAME_PLACEHOLDER"
+  access_key: ""
+  secret_key: ""
+  region: "REGION_PLACEHOLDER"
+  oidc:
+    id_token_file_path: ""
+    idp_id: ""
+    domain_id: ""
+EOF
           
-          # logs.yml
-          printf '%s\n' \
-            'level: info' \
-            'encoding: console' \
-            'outputPaths:' \
-            '  - stdout' \
-            'errorOutputPaths:' \
-            '  - stderr' > config-files/logs.yml
+          # ============================================
+          # 2. endpoints.yml
+          # ============================================
+          cat > config-files/endpoints.yml << 'EOF'
+"ewp":
+  "https://cloudsite-internal.cn-north-4.myhuaweicloud.com"
+EOF
           
-          # metric.yml
+          # ============================================
+          # 3. logs.yml
+          # ============================================
+          cat > config-files/logs.yml << 'EOF'
+business:
+  - level: "error"
+    type: "FILE"
+    filename: "./server.log"
+    time_format: "2006-01-02 15:04:05 Z07:00"
+    max_size: 20480000
+    max_backups: 20
+    max_age: 30
+    enabled: true
+    commpress: true
+EOF
+          
+          # ============================================
+          # 4. metric.yml（从源码复制）
+          # ============================================
           if [ -f "cloudeye-exporter-source/metric.yml" ]; then
             cp cloudeye-exporter-source/metric.yml config-files/
           else
-            printf '%s\n' '# metric configuration' > config-files/metric.yml
+            echo '# metric configuration' > config-files/metric.yml
           fi
           
-          # endpoints.yml
-          if [ -f "cloudeye-exporter-source/endpoints.yml" ]; then
-            cp cloudeye-exporter-source/endpoints.yml config-files/
-          else
-            printf '%s\n' '# endpoints configuration' > config-files/endpoints.yml
-          fi
-          
-          # 复制 JSON 配置文件（如果存在）
+          # ============================================
+          # 5. 复制 JSON 配置文件
+          # ============================================
           cp cloudeye-exporter-source/*.json config-files/ 2>/dev/null || true
           
           echo "=== 生成的配置文件 ==="
           ls -la config-files/
-          echo "=== clouds.yml 内容（AK/SK 已留空）==="
+          echo ""
+          echo "=== clouds.yml 内容（全部占位符）==="
           cat config-files/clouds.yml
 
       - name: Create Dockerfile
@@ -124,8 +138,8 @@ jobs:
           # 第二阶段：运行阶段
           FROM --platform=linux/arm64 alpine:latest
 
-          # 安装必要工具和 ca-certificates
-          RUN apk --no-cache add ca-certificates tzdata
+          # 安装必要工具
+          RUN apk --no-cache add ca-certificates tzdata sed
 
           # 创建 exporter 工作目录
           RUN mkdir -p /exporter
@@ -134,7 +148,7 @@ jobs:
           # 从构建阶段复制二进制文件
           COPY --from=builder /build/cloudeye-exporter /exporter/
 
-          # 复制所有配置文件
+          # 复制所有配置文件到镜像
           COPY config-files/ /exporter/
 
           # 给二进制文件执行权限
@@ -143,8 +157,30 @@ jobs:
           # 暴露端口
           EXPOSE 8080
 
-          # 启动程序（AK/SK 通过启动脚本传入，不在镜像中）
-          ENTRYPOINT ["/exporter/cloudeye-exporter"]
+          # 使用启动脚本（运行时替换占位符）
+          COPY --chmod=755 <<'START_SCRIPT' /exporter/start.sh
+#!/bin/sh
+# 替换 clouds.yml 中的占位符
+if [ -n "$AUTH_URL" ]; then
+    sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml
+fi
+if [ -n "$PROJECT_NAME" ]; then
+    sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml
+fi
+if [ -n "$REGION" ]; then
+    sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml
+fi
+if [ -n "$HUAWEI_CLOUD_AK" ]; then
+    sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml
+fi
+if [ -n "$HUAWEI_CLOUD_SK" ]; then
+    sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml
+fi
+# 启动 exporter
+exec /exporter/cloudeye-exporter "$@"
+START_SCRIPT
+
+          ENTRYPOINT ["/exporter/start.sh"]
           DOCKER_EOF
 
       - name: Build Docker image for ARM64
@@ -161,12 +197,16 @@ jobs:
           docker run --rm --entrypoint ls ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -la /exporter/
           echo ""
           echo "=== 检查关键文件 ==="
-          docker run --rm --entrypoint test ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f /exporter/clouds.yml && echo "✓ clouds.yml 存在" || echo "✗ clouds.yml 缺失"
-          docker run --rm --entrypoint test ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f /exporter/logs.yml && echo "✓ logs.yml 存在" || echo "✗ logs.yml 缺失"
-          docker run --rm --entrypoint test ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f /exporter/cloudeye-exporter && echo "✓ 二进制文件存在" || echo "✗ 二进制文件缺失"
+          for file in cloudeye-exporter clouds.yml logs.yml endpoints.yml metric.yml start.sh; do
+            if docker run --rm --entrypoint test ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f "/exporter/$file"; then
+              echo "✓ $file 存在"
+            else
+              echo "✗ $file 缺失"
+            fi
+          done
           echo ""
-          echo "=== 验证 AK/SK 未写入镜像 ==="
-          docker run --rm --entrypoint cat ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} /exporter/clouds.yml | grep -E "access_key|secret_key"
+          echo "=== 验证占位符 ==="
+          docker run --rm --entrypoint cat ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} /exporter/clouds.yml
 
       - name: Save image to tar file
         run: |
