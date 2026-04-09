@@ -45,7 +45,6 @@ jobs:
         run: |
           mkdir -p config-files
           
-          # clouds.yml - 使用占位符
           cat > config-files/clouds.yml << 'EOF'
 global:
   prefix: "huaweicloud"
@@ -70,13 +69,11 @@ auth:
     domain_id: ""
 EOF
           
-          # endpoints.yml
           cat > config-files/endpoints.yml << 'EOF'
 "ewp":
   "https://cloudsite-internal.cn-north-4.myhuaweicloud.com"
 EOF
           
-          # logs.yml
           cat > config-files/logs.yml << 'EOF'
 business:
   - level: "error"
@@ -90,26 +87,20 @@ business:
     commpress: true
 EOF
           
-          # metric.yml
           if [ -f "cloudeye-exporter-source/metric.yml" ]; then
             cp cloudeye-exporter-source/metric.yml config-files/
           else
             echo '# metric configuration' > config-files/metric.yml
           fi
           
-          # 复制 JSON 配置文件
           cp cloudeye-exporter-source/*.json config-files/ 2>/dev/null || true
           
           echo "=== 生成的配置文件 ==="
           ls -la config-files/
-          echo ""
-          echo "=== clouds.yml ==="
-          cat config-files/clouds.yml
 
       - name: Create Dockerfile
         run: |
           cat > Dockerfile << 'DOCKER_EOF'
-          # 第一阶段：构建阶段
           FROM --platform=linux/arm64 golang:1.19-alpine AS builder
 
           ENV GO111MODULE=on \
@@ -124,7 +115,6 @@ EOF
           RUN go mod download
           RUN go build -ldflags="-s -w" -o cloudeye-exporter .
 
-          # 第二阶段：运行阶段
           FROM --platform=linux/arm64 alpine:latest
 
           RUN apk --no-cache add ca-certificates tzdata sed
@@ -141,27 +131,28 @@ EOF
               chmod 666 /exporter/endpoints.yml && \
               chmod 666 /exporter/metric.yml
 
-          RUN echo '#!/bin/sh' > /exporter/start.sh && \
-              echo '' >> /exporter/start.sh && \
-              echo '# 替换占位符' >> /exporter/start.sh && \
-              echo 'if [ -n "$AUTH_URL" ]; then' >> /exporter/start.sh && \
-              echo '    sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml' >> /exporter/start.sh && \
-              echo 'fi' >> /exporter/start.sh && \
-              echo 'if [ -n "$PROJECT_NAME" ]; then' >> /exporter/start.sh && \
-              echo '    sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml' >> /exporter/start.sh && \
-              echo 'fi' >> /exporter/start.sh && \
-              echo 'if [ -n "$REGION" ]; then' >> /exporter/start.sh && \
-              echo '    sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml' >> /exporter/start.sh && \
-              echo 'fi' >> /exporter/start.sh && \
-              echo 'if [ -n "$HUAWEI_CLOUD_AK" ]; then' >> /exporter/start.sh && \
-              echo '    sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml' >> /exporter/start.sh && \
-              echo 'fi' >> /exporter/start.sh && \
-              echo 'if [ -n "$HUAWEI_CLOUD_SK" ]; then' >> /exporter/start.sh && \
-              echo '    sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml' >> /exporter/start.sh && \
-              echo 'fi' >> /exporter/start.sh && \
-              echo '' >> /exporter/start.sh && \
-              echo '# 启动 exporter' >> /exporter/start.sh && \
-              echo 'exec /exporter/cloudeye-exporter "$@"' >> /exporter/start.sh
+          RUN printf '%s\n' \
+              '#!/bin/sh' \
+              '' \
+              '# 替换占位符' \
+              'if [ -n "$AUTH_URL" ]; then' \
+              '    sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml' \
+              'fi' \
+              'if [ -n "$PROJECT_NAME" ]; then' \
+              '    sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml' \
+              'fi' \
+              'if [ -n "$REGION" ]; then' \
+              '    sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml' \
+              'fi' \
+              'if [ -n "$HUAWEI_CLOUD_AK" ]; then' \
+              '    sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml' \
+              'fi' \
+              'if [ -n "$HUAWEI_CLOUD_SK" ]; then' \
+              '    sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml' \
+              'fi' \
+              '' \
+              '# 启动 exporter' \
+              'exec /exporter/cloudeye-exporter "$@"' > /exporter/start.sh
 
           RUN chmod 755 /exporter/start.sh
 
@@ -181,16 +172,12 @@ EOF
         run: |
           echo "=== 验证镜像内容 ==="
           docker run --rm --entrypoint ls ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -la /exporter/
-          echo ""
-          echo "=== 验证启动脚本 ==="
-          docker run --rm --entrypoint cat ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} /exporter/start.sh | head -10
 
       - name: Save image to tar file
         run: |
           docker save ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -o ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
           gzip ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
           sha256sum ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz > ${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar.gz.sha256
-          echo "生成的文件："
           ls -lh *.tar.gz*
 
       - name: Upload artifact
