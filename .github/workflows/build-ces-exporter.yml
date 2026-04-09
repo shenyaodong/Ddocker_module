@@ -40,38 +40,13 @@ jobs:
       - name: Create config files
         run: |
           mkdir -p config-files
-          echo 'global:
-  prefix: "huaweicloud"
-  scrape_batch_size: 300
-  resource_sync_interval_minutes: 180
-  ignore_ssl_verify: false
-auth:
-  auth_url: "AUTH_URL_PLACEHOLDER"
-  project_name: "PROJECT_NAME_PLACEHOLDER"
-  access_key: ""
-  secret_key: ""
-  region: "REGION_PLACEHOLDER"' > config-files/clouds.yml
-          echo '"ewp":
-  "https://cloudsite-internal.cn-north-4.myhuaweicloud.com"' > config-files/endpoints.yml
-          echo 'business:
-  - level: "error"
-    type: "FILE"
-    filename: "./server.log"
-    time_format: "2006-01-02 15:04:05 Z07:00"
-    max_size: 20480000
-    max_backups: 20
-    max_age: 30
-    enabled: true
-    commpress: true' > config-files/logs.yml
+          printf '%s\n' 'global:' '  prefix: "huaweicloud"' '  scrape_batch_size: 300' '  resource_sync_interval_minutes: 180' '  ignore_ssl_verify: false' 'auth:' '  auth_url: "AUTH_URL_PLACEHOLDER"' '  project_name: "PROJECT_NAME_PLACEHOLDER"' '  access_key: ""' '  secret_key: ""' '  region: "REGION_PLACEHOLDER"' > config-files/clouds.yml
+          printf '%s\n' '"ewp":' '  "https://cloudsite-internal.cn-north-4.myhuaweicloud.com"' > config-files/endpoints.yml
+          printf '%s\n' 'business:' '  - level: "error"' '    type: "FILE"' '    filename: "./server.log"' '    time_format: "2006-01-02 15:04:05 Z07:00"' '    max_size: 20480000' '    max_backups: 20' '    max_age: 30' '    enabled: true' '    commpress: true' > config-files/logs.yml
           echo '# metric configuration' > config-files/metric.yml
 
       - name: Build image
-        run: |
-          docker build \
-            --platform linux/arm64 \
-            -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
-            -t ${{ env.IMAGE_NAME }}:latest-arm64 \
-            .
+        run: docker build --platform linux/arm64 -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -t ${{ env.IMAGE_NAME }}:latest-arm64 .
 
       - name: Save to tar
         run: |
