@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout workflow code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up QEMU
@@ -38,11 +38,11 @@ jobs:
             TAG_VERSION=${TAG_VERSION#v}
             git checkout tags/v${TAG_VERSION} -b build-version
           fi
-          ls -la
 
       - name: Generate config files
         run: |
           mkdir -p config-files
+          
           cat > config-files/clouds.yml << 'EOF'
 global:
   prefix: "huaweicloud"
@@ -56,10 +56,12 @@ auth:
   secret_key: ""
   region: "REGION_PLACEHOLDER"
 EOF
+          
           cat > config-files/endpoints.yml << 'EOF'
 "ewp":
   "https://cloudsite-internal.cn-north-4.myhuaweicloud.com"
 EOF
+          
           cat > config-files/logs.yml << 'EOF'
 business:
   - level: "error"
@@ -72,59 +74,22 @@ business:
     enabled: true
     commpress: true
 EOF
+          
           echo '# metric configuration' > config-files/metric.yml
+          
+          echo "=== 生成的配置文件 ==="
           ls -la config-files/
-
-      - name: Create start script base64
-        run: |
-          cat > /tmp/start.sh << 'SCRIPT_EOF'
-          #!/bin/sh
-          if [ -n "$AUTH_URL" ]; then
-              sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml
-          fi
-          if [ -n "$PROJECT_NAME" ]; then
-              sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml
-          fi
-          if [ -n "$REGION" ]; then
-              sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml
-          fi
-          if [ -n "$HUAWEI_CLOUD_AK" ]; then
-              sed -i 's|access_key: ""|access_key: "'"$HUAWEI_CLOUD_AK"'"|' /exporter/clouds.yml
-          fi
-          if [ -n "$HUAWEI_CLOUD_SK" ]; then
-              sed -i 's|secret_key: ""|secret_key: "'"$HUAWEI_CLOUD_SK"'"|' /exporter/clouds.yml
-          fi
-          exec /exporter/cloudeye-exporter "$@"
-          SCRIPT_EOF
-          cat /tmp/start.sh
           echo ""
-          echo "BASE64 encoded:"
-          base64 -w 0 /tmp/start.sh
+          echo "=== clouds.yml ==="
+          cat config-files/clouds.yml
+          echo ""
+          echo "=== logs.yml ==="
+          cat config-files/logs.yml
+          echo ""
+          echo "=== endpoints.yml ==="
+          cat config-files/endpoints.yml
 
-      - name: Create Dockerfile
-        run: |
-          START_SCRIPT_BASE64=$(base64 -w 0 /tmp/start.sh)
-          cat > Dockerfile << DOCKER_EOF
-          FROM --platform=linux/arm64 golang:1.19-alpine AS builder
-          ENV GO111MODULE=on GOPROXY=https://goproxy.cn,direct CGO_ENABLED=0 GOOS=linux GOARCH=arm64
-          WORKDIR /build
-          COPY cloudeye-exporter-source/ .
-          RUN go mod download
-          RUN go build -ldflags="-s -w" -o cloudeye-exporter
-          FROM --platform=linux/arm64 alpine:latest
-          RUN apk --no-cache add ca-certificates tzdata sed
-          RUN mkdir -p /exporter
-          WORKDIR /exporter
-          COPY --from=builder /build/cloudeye-exporter /exporter/
-          COPY config-files/ /exporter/
-          RUN chmod +x /exporter/cloudeye-exporter && chmod 666 /exporter/clouds.yml
-          RUN echo "$START_SCRIPT_BASE64" | base64 -d > /exporter/start.sh
-          RUN chmod 755 /exporter/start.sh
-          EXPOSE 8080
-          ENTRYPOINT ["/exporter/start.sh"]
-          DOCKER_EOF
-
-      - name: Build Docker image for ARM64
+      - name: Build Docker image
         run: |
           docker build \
             --platform linux/arm64 \
@@ -134,7 +99,11 @@ EOF
 
       - name: Verify image contents
         run: |
+          echo "=== 验证镜像中的文件 ==="
           docker run --rm --entrypoint ls ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -la /exporter/
+          echo ""
+          echo "=== 验证文件权限 ==="
+          docker run --rm --entrypoint sh ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -c "ls -la /exporter/clouds.yml /exporter/logs.yml /exporter/endpoints.yml /exporter/metric.yml"
 
       - name: Save image to tar file
         run: |
