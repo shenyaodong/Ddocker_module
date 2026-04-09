@@ -75,9 +75,36 @@ EOF
           echo '# metric configuration' > config-files/metric.yml
           ls -la config-files/
 
+      - name: Create start script base64
+        run: |
+          cat > /tmp/start.sh << 'SCRIPT_EOF'
+          #!/bin/sh
+          if [ -n "$AUTH_URL" ]; then
+              sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml
+          fi
+          if [ -n "$PROJECT_NAME" ]; then
+              sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml
+          fi
+          if [ -n "$REGION" ]; then
+              sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml
+          fi
+          if [ -n "$HUAWEI_CLOUD_AK" ]; then
+              sed -i 's|access_key: ""|access_key: "'"$HUAWEI_CLOUD_AK"'"|' /exporter/clouds.yml
+          fi
+          if [ -n "$HUAWEI_CLOUD_SK" ]; then
+              sed -i 's|secret_key: ""|secret_key: "'"$HUAWEI_CLOUD_SK"'"|' /exporter/clouds.yml
+          fi
+          exec /exporter/cloudeye-exporter "$@"
+          SCRIPT_EOF
+          cat /tmp/start.sh
+          echo ""
+          echo "BASE64 encoded:"
+          base64 -w 0 /tmp/start.sh
+
       - name: Create Dockerfile
         run: |
-          cat > Dockerfile << 'DOCKER_EOF'
+          START_SCRIPT_BASE64=$(base64 -w 0 /tmp/start.sh)
+          cat > Dockerfile << DOCKER_EOF
           FROM --platform=linux/arm64 golang:1.19-alpine AS builder
           ENV GO111MODULE=on GOPROXY=https://goproxy.cn,direct CGO_ENABLED=0 GOOS=linux GOARCH=arm64
           WORKDIR /build
@@ -91,13 +118,7 @@ EOF
           COPY --from=builder /build/cloudeye-exporter /exporter/
           COPY config-files/ /exporter/
           RUN chmod +x /exporter/cloudeye-exporter && chmod 666 /exporter/clouds.yml
-          RUN printf '#!/bin/sh\n' > /exporter/start.sh
-          RUN printf 'if [ -n "$AUTH_URL" ]; then sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
-          RUN printf 'if [ -n "$PROJECT_NAME" ]; then sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
-          RUN printf 'if [ -n "$REGION" ]; then sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
-          RUN printf 'if [ -n "$HUAWEI_CLOUD_AK" ]; then sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
-          RUN printf 'if [ -n "$HUAWEI_CLOUD_SK" ]; then sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml; fi\n' >> /exporter/start.sh
-          RUN printf 'exec /exporter/cloudeye-exporter "$@"\n' >> /exporter/start.sh
+          RUN echo "$START_SCRIPT_BASE64" | base64 -d > /exporter/start.sh
           RUN chmod 755 /exporter/start.sh
           EXPOSE 8080
           ENTRYPOINT ["/exporter/start.sh"]
