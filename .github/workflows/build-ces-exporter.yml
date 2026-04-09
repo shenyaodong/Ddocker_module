@@ -38,7 +38,6 @@ jobs:
             TAG_VERSION=${TAG_VERSION#v}
             git checkout tags/v${TAG_VERSION} -b build-version
           fi
-          echo "源码目录内容："
           ls -la
 
       - name: Generate config files
@@ -51,22 +50,12 @@ global:
   scrape_batch_size: 300
   resource_sync_interval_minutes: 180
   ignore_ssl_verify: false
-  proxy_schema: ""
-  proxy_host: ""
-  proxy_port: 0
-  proxy_username: ""
-  proxy_password: ""
-  rms_retry_times: 1
 auth:
   auth_url: "AUTH_URL_PLACEHOLDER"
   project_name: "PROJECT_NAME_PLACEHOLDER"
   access_key: ""
   secret_key: ""
   region: "REGION_PLACEHOLDER"
-  oidc:
-    id_token_file_path: ""
-    idp_id: ""
-    domain_id: ""
 EOF
           
           cat > config-files/endpoints.yml << 'EOF'
@@ -87,75 +76,47 @@ business:
     commpress: true
 EOF
           
-          if [ -f "cloudeye-exporter-source/metric.yml" ]; then
-            cp cloudeye-exporter-source/metric.yml config-files/
-          else
-            echo '# metric configuration' > config-files/metric.yml
-          fi
-          
-          cp cloudeye-exporter-source/*.json config-files/ 2>/dev/null || true
-          
-          echo "=== 生成的配置文件 ==="
+          echo '# metric configuration' > config-files/metric.yml
           ls -la config-files/
 
       - name: Create Dockerfile
         run: |
           cat > Dockerfile << 'DOCKER_EOF'
           FROM --platform=linux/arm64 golang:1.19-alpine AS builder
-
-          ENV GO111MODULE=on \
-              GOPROXY=https://goproxy.cn,direct \
-              CGO_ENABLED=0 \
-              GOOS=linux \
-              GOARCH=arm64
-
+          ENV GO111MODULE=on GOPROXY=https://goproxy.cn,direct CGO_ENABLED=0 GOOS=linux GOARCH=arm64
           WORKDIR /build
-
           COPY cloudeye-exporter-source/ .
           RUN go mod download
           RUN go build -ldflags="-s -w" -o cloudeye-exporter .
-
+          
           FROM --platform=linux/arm64 alpine:latest
-
           RUN apk --no-cache add ca-certificates tzdata sed
-
           RUN mkdir -p /exporter
           WORKDIR /exporter
-
           COPY --from=builder /build/cloudeye-exporter /exporter/
           COPY config-files/ /exporter/
-
-          RUN chmod +x /exporter/cloudeye-exporter && \
-              chmod 666 /exporter/clouds.yml && \
-              chmod 666 /exporter/logs.yml && \
-              chmod 666 /exporter/endpoints.yml && \
-              chmod 666 /exporter/metric.yml
-
-          RUN printf '%s\n' \
-              '#!/bin/sh' \
-              '' \
-              '# 替换占位符' \
-              'if [ -n "$AUTH_URL" ]; then' \
-              '    sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml' \
-              'fi' \
-              'if [ -n "$PROJECT_NAME" ]; then' \
-              '    sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml' \
-              'fi' \
-              'if [ -n "$REGION" ]; then' \
-              '    sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml' \
-              'fi' \
-              'if [ -n "$HUAWEI_CLOUD_AK" ]; then' \
-              '    sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml' \
-              'fi' \
-              'if [ -n "$HUAWEI_CLOUD_SK" ]; then' \
-              '    sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml' \
-              'fi' \
-              '' \
-              '# 启动 exporter' \
-              'exec /exporter/cloudeye-exporter "$@"' > /exporter/start.sh
-
+          RUN chmod +x /exporter/cloudeye-exporter && chmod 666 /exporter/clouds.yml
+          
+          RUN echo '#!/bin/sh' > /exporter/start.sh
+          RUN echo 'set -e' >> /exporter/start.sh
+          RUN echo 'if [ -n "$AUTH_URL" ]; then' >> /exporter/start.sh
+          RUN echo '  sed -i "s|AUTH_URL_PLACEHOLDER|$AUTH_URL|g" /exporter/clouds.yml' >> /exporter/start.sh
+          RUN echo 'fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$PROJECT_NAME" ]; then' >> /exporter/start.sh
+          RUN echo '  sed -i "s|PROJECT_NAME_PLACEHOLDER|$PROJECT_NAME|g" /exporter/clouds.yml' >> /exporter/start.sh
+          RUN echo 'fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$REGION" ]; then' >> /exporter/start.sh
+          RUN echo '  sed -i "s|REGION_PLACEHOLDER|$REGION|g" /exporter/clouds.yml' >> /exporter/start.sh
+          RUN echo 'fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$HUAWEI_CLOUD_AK" ]; then' >> /exporter/start.sh
+          RUN echo '  sed -i "s|access_key: \"\"|access_key: \"$HUAWEI_CLOUD_AK\"|" /exporter/clouds.yml' >> /exporter/start.sh
+          RUN echo 'fi' >> /exporter/start.sh
+          RUN echo 'if [ -n "$HUAWEI_CLOUD_SK" ]; then' >> /exporter/start.sh
+          RUN echo '  sed -i "s|secret_key: \"\"|secret_key: \"$HUAWEI_CLOUD_SK\"|" /exporter/clouds.yml' >> /exporter/start.sh
+          RUN echo 'fi' >> /exporter/start.sh
+          RUN echo 'exec /exporter/cloudeye-exporter "$@"' >> /exporter/start.sh
+          
           RUN chmod 755 /exporter/start.sh
-
           EXPOSE 8080
           ENTRYPOINT ["/exporter/start.sh"]
           DOCKER_EOF
@@ -170,7 +131,6 @@ EOF
 
       - name: Verify image contents
         run: |
-          echo "=== 验证镜像内容 ==="
           docker run --rm --entrypoint ls ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -la /exporter/
 
       - name: Save image to tar file
