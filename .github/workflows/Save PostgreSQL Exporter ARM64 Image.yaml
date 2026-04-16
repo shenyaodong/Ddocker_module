@@ -1,93 +1,27 @@
-name: Build openGauss Exporter ARM64 Image
+name: Pull PostgreSQL Exporter ARM64 Image
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: '要构建的分支或标签'
-        required: true
-        default: 'master'
-        type: string
 
 jobs:
-  build-arm64-image:
+  pull-and-save:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout openGauss-exporter source code
-      uses: actions/checkout@v4
-      with:
-        repository: opengauss-mirror/openGauss-prometheus-exporter
-        ref: ${{ github.event.inputs.branch }}
-        path: openGauss-exporter
-    
-    - name: Set up QEMU for multi-platform builds
-      uses: docker/setup-qemu-action@v3
-      with:
-        platforms: arm64
-    
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
     
-    - name: Log in to Docker Hub (optional, only if you need to pull base images)
-      uses: docker/login-action@v3
-      with:
-        registry: docker.io
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_TOKEN }}
-      continue-on-error: true
-    
-    - name: Build ARM64 Docker image
-      working-directory: ./openGauss-exporter
+    - name: Pull PostgreSQL Exporter ARM64 image
       run: |
-        # 方式1：使用Dockerfile直接构建（如果存在）
-        if [ -f "Dockerfile" ]; then
-          docker build \
-            --platform linux/arm64 \
-            -t opengauss-exporter:arm64 \
-            -f Dockerfile .
-        else
-          # 方式2：如果没有Dockerfile，使用多阶段构建
-          docker build \
-            --platform linux/arm64 \
-            -t opengauss-exporter:arm64 \
-            -f - . <<EOF
-        FROM golang:1.19 AS builder
-        WORKDIR /workspace
-        COPY . .
-        ENV GOPROXY=https://goproxy.cn,direct GO111MODULE=on
-        RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -a -installsuffix cgo -o opengauss_exporter .
-
-        FROM alpine:3.18
-        RUN apk --no-cache add ca-certificates
-        COPY --from=builder /workspace/opengauss_exporter /bin/opengauss_exporter
-        COPY og_exporter_default.yaml /etc/og_exporter/
-        EXPOSE 9187
-        ENTRYPOINT ["/bin/opengauss_exporter"]
-        CMD ["--config.file=/etc/og_exporter/og_exporter_default.yaml"]
-        EOF
-        fi
+        docker pull --platform linux/arm64 prometheuscommunity/postgres-exporter:v0.15.0
     
-    - name: List built images
+    - name: Save image as tar
       run: |
-        docker images | grep opengauss-exporter
+        docker save prometheuscommunity/postgres-exporter:v0.15.0 -o postgres-exporter-arm64.tar
     
-    - name: Save Docker image as tar file
-      run: |
-        docker save opengauss-exporter:arm64 -o opengauss-exporter-arm64.tar
-        ls -lh opengauss-exporter-arm64.tar
-    
-    - name: Compress tar file (optional, to reduce size)
-      run: |
-        gzip -c opengauss-exporter-arm64.tar > opengauss-exporter-arm64.tar.gz
-        ls -lh opengauss-exporter-arm64.tar.gz
-    
-    - name: Upload tar artifact for manual download
+    - name: Upload tar artifact
       uses: actions/upload-artifact@v4
       with:
-        name: opengauss-exporter-arm64
-        path: |
-          opengauss-exporter-arm64.tar
-          opengauss-exporter-arm64.tar.gz
+        name: postgres-exporter-arm64
+        path: postgres-exporter-arm64.tar
         retention-days: 30
-        compression-level: 0
