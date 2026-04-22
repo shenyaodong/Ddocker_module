@@ -1,0 +1,105 @@
+name: Build ARM64 Docker Image and Export as TAR
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'gaussdb-exporter/**'
+      - 'common/**'
+      - '.github/workflows/build-arm64-tar.yml'
+  workflow_dispatch:  # 支持手动触发
+
+env:
+  MODULE_NAME: gaussdb-exporter
+  IMAGE_NAME: gaussdb-exporter
+  IMAGE_TAG: 1.0.0
+  TAR_FILE: gaussdb-exporter-arm64.tar.gz
+
+jobs:
+  build-and-export:
+    name: Build ARM64 Docker Image and Export as TAR
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # 2. 设置 JDK 17
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      # 3. 缓存 Maven 依赖
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+      
+      # 4. 构建 Maven 项目
+      - name: Build with Maven
+        run: |
+          # 先安装父工程
+          mvn clean install -N
+          # 再安装 common 模块
+          mvn clean install -pl common
+          # 打包 gaussdb-exporter
+          mvn clean package -pl ${{ env.MODULE_NAME }} -am -DskipTests
+      
+      # 5. 验证 JAR 文件存在
+      - name: Verify JAR file
+        run: |
+          ls -la ${{ env.MODULE_NAME }}/target/
+          test -f ${{ env.MODULE_NAME }}/target/*.jar || exit 1
+      
+      # 6. 设置 QEMU 多架构仿真（用于在 x86 构建机上构建 ARM64 镜像）
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
+      # 7. 设置 Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      # 8. 构建 ARM64 Docker 镜像并导出为 tar
+      - name: Build ARM64 Docker image and export to tar
+        run: |
+          # 构建 ARM64 镜像并保存到本地
+          docker buildx build \
+            --platform linux/arm64 \
+            --load \
+            -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            -f ./${{ env.MODULE_NAME }}/Dockerfile \
+            ./${{ env.MODULE_NAME }}
+          
+          # 查看镜像
+          docker images | grep ${{ env.IMAGE_NAME }}
+          
+          # 导出为 tar 文件
+          docker save ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} | gzip > ${{ env.TAR_FILE }}
+          
+          # 验证 tar 文件
+          ls -la ${{ env.TAR_FILE }}
+      
+      # 9. 上传 tar 包作为 Artifact
+      - name: Upload TAR as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaussdb-exporter-arm64
+          path: ${{ env.TAR_FILE }}
+          retention-days: 7
+          compression-level: 0  # 已经压缩过，不再重复压缩
+      
+      # 10. 可选：也上传 JAR 文件
+      - name: Upload JAR as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gaussdb-exporter-jar
+          path: ${{ env.MODULE_NAME }}/target/*.jar
+          retention-days: 7
