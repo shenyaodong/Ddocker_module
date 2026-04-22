@@ -1,7 +1,7 @@
-name: Download ARM64 JDK Image
+name: Download ARM64 JDK Image (UBI Minimal)
 
 on:
-  workflow_dispatch:  # 手动触发，方便你随时下载
+  workflow_dispatch:  # 手动触发
 
 jobs:
   build:
@@ -18,22 +18,25 @@ jobs:
       # 3. 拉取并保存 ARM64 架构的镜像
       - name: Pull and save ARM64 Docker image
         run: |
-          # 拉取 ARM64 版本的 OpenJDK 17 JRE 镜像
-          docker pull --platform linux/arm64 eclipse-temurin:17-jre-alpine
+          echo ">>> Pulling ARM64 image: eclipse-temurin:17.0.18_8-jre-ubi9-minimal"
+          docker pull --platform linux/arm64 eclipse-temurin:17.0.18_8-jre-ubi9-minimal
           
-          # 保存为 tar 文件
-          docker save eclipse-temurin:17-jre-alpine -o temurin-17-jre-alpine.tar
+          echo ">>> Verifying image architecture..."
+          docker inspect eclipse-temurin:17.0.18_8-jre-ubi9-minimal | grep -A 2 "Architecture"
           
-          # 压缩以减小文件大小
-          gzip temurin-17-jre-alpine.tar
+          echo ">>> Saving image to tar file..."
+          docker save eclipse-temurin:17.0.18_8-jre-ubi9-minimal -o temurin-17-ubi-minimal.tar
           
-          # 查看文件
-          ls -lh temurin-17-jre-alpine.tar.gz
+          echo ">>> Compressing tar file..."
+          gzip temurin-17-ubi-minimal.tar
+          
+          echo ">>> File size:"
+          ls -lh temurin-17-ubi-minimal.tar.gz
       
       # 4. 上传压缩包供下载
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: temurin-17-jre-alpine-arm64
-          path: temurin-17-jre-alpine.tar.gz
+          name: temurin-17-jre-ubi-minimal-arm64
+          path: temurin-17-ubi-minimal.tar.gz
           retention-days: 7
